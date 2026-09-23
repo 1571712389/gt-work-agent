@@ -187,6 +187,13 @@ CREATE TABLE IF NOT EXISTS desktop_auths (
   approved_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS desktop_auths_status ON desktop_auths(status, expires_at);
+CREATE TABLE IF NOT EXISTS client_tasks (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS client_tasks_user_updated ON client_tasks(user_id, updated_at);
 `);
   db.exec(`
 CREATE TABLE IF NOT EXISTS generation_jobs (

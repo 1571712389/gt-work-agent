@@ -43,13 +43,13 @@ interface AppState {
 }
 
 const defaultSettings: AppSettings = {
-  apiBase: 'http://127.0.0.1:8787/v1',
+  apiBase: 'http://43.139.61.253:8787/v1',
   apiKey: '',
   model: 'deepseek-chat',
   defaultWorkspace: '',
   permissionMode: 'default',
   closeToTray: true,
-  shopUrl: 'http://127.0.0.1:8787',
+  shopUrl: 'http://43.139.61.253:8787',
   userEmail: '',
 }
 

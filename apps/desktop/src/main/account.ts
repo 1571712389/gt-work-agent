@@ -1,5 +1,5 @@
 import { shell } from 'electron'
-import { loadSettings, saveSettings } from './settings'
+import { isLoopbackUrl, loadSettings, saveSettings } from './settings'
 import type { Entitlements } from '../shared/protocol'
 
 function origin(apiBase: string): string {
@@ -44,7 +44,7 @@ async function applyEntitlements(token: string, email: string) {
     ...settings,
     apiKey: token,
     userEmail: ent?.user.email || email,
-    shopUrl: ent?.shopUrl || settings.shopUrl,
+    shopUrl: ent?.shopUrl && !isLoopbackUrl(ent.shopUrl) ? ent.shopUrl : settings.shopUrl,
     model,
   })
 }

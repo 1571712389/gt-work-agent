@@ -52,6 +52,50 @@ export function tasksDir(): string {
   return dir
 }
 
+function accountApi(): { base: string; token: string } | null {
+  const settings = loadSettings()
+  if (!settings.apiKey) return null
+  return { base: settings.apiBase.replace(/\/v1\/?$/, ''), token: settings.apiKey }
+}
+
+function writeTaskFile(task: TaskRecord): void {
+  const file = path.join(tasksDir(), `${task.id}.json`)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(task))
+}
+
+export async function pullTasks(): Promise<void> {
+  const api = accountApi()
+  if (!api) return
+  const resp = await fetch(`${api.base}/v1/tasks`, { headers: { Authorization: `Bearer ${api.token}` } }).catch(() => null)
+  if (!resp?.ok) return
+  const body = (await resp.json()) as { list?: TaskRecord[] }
+  for (const task of body.list || []) {
+    if (!task?.id) continue
+    const local = readJson<TaskRecord | null>(path.join(tasksDir(), `${task.id}.json`), null)
+    if (!local || (task.updatedAt || 0) >= (local.updatedAt || 0)) writeTaskFile(task)
+  }
+}
+
+function pushTask(task: TaskRecord): void {
+  const api = accountApi()
+  if (!api) return
+  void fetch(`${api.base}/v1/tasks/${encodeURIComponent(task.id)}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${api.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(task),
+  }).catch(() => undefined)
+}
+
+function deleteRemoteTask(id: string): void {
+  const api = accountApi()
+  if (!api) return
+  void fetch(`${api.base}/v1/tasks/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${api.token}` },
+  }).catch(() => undefined)
+}
+
 export function listTasks(): TaskRecord[] {
   if (!loadSettings().apiKey) return []
   const dir = tasksDir()
@@ -71,14 +115,14 @@ export function getTask(id: string): TaskRecord | null {
 
 export function saveTask(task: TaskRecord): void {
   if (!loadSettings().apiKey) return
-  const file = path.join(tasksDir(), `${task.id}.json`)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, JSON.stringify(task))
+  writeTaskFile(task)
+  pushTask(task)
 }
 
 export function deleteTask(id: string): void {
   const file = path.join(tasksDir(), `${id}.json`)
   if (fs.existsSync(file)) fs.unlinkSync(file)
+  deleteRemoteTask(id)
 }
 
 function migrateMcpList(list: McpInfo[]): McpInfo[] {

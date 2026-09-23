@@ -64,7 +64,10 @@ function fail(message: string, status: number, type = 'generate') {
 function allowedModels(user: SessionUser): string[] {
   const sub = activeSub(user.id)
   if (!sub) return []
-  return JSON.parse(sub.pkg.models_json) as string[]
+  const listed = JSON.parse(sub.pkg.models_json) as string[]
+  if (listed.includes('*')) return ['*']
+  const enabled = many<{ id: string }>('SELECT id FROM models WHERE enabled = 1').map((row) => row.id)
+  return [...new Set([...listed, ...enabled])]
 }
 
 function baseModel(): ModelPricing | undefined {

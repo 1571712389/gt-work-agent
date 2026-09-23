@@ -6,13 +6,13 @@ import type { AppSettings } from '../shared/protocol'
 const FILE = () => path.join(app.getPath('userData'), 'settings.json')
 
 const DEFAULTS: AppSettings = {
-  apiBase: 'http://127.0.0.1:8787/v1',
+  apiBase: 'http://43.139.61.253:8787/v1',
   apiKey: '',
   model: 'deepseek-chat',
   defaultWorkspace: '',
   permissionMode: 'default',
   closeToTray: true,
-  shopUrl: 'http://127.0.0.1:8787',
+  shopUrl: 'http://43.139.61.253:8787',
   userEmail: '',
 }
 
@@ -55,15 +55,20 @@ export function isUpstreamGateway(url: string): boolean {
   return UPSTREAM_HOST.test(hostnameOf(url))
 }
 
+export function isLoopbackUrl(url: string): boolean {
+  const host = hostnameOf(url)
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1'
+}
+
 function migrateApiBase(value?: string): string {
   const next = (value || '').trim()
-  if (!next || isUpstreamGateway(next)) return DEFAULTS.apiBase
+  if (!next || isUpstreamGateway(next) || isLoopbackUrl(next)) return DEFAULTS.apiBase
   return next
 }
 
 function migrateShopUrl(value?: string, apiBase?: string): string {
   const next = (value || '').trim()
-  if (!next || isUpstreamGateway(next)) {
+  if (!next || isUpstreamGateway(next) || isLoopbackUrl(next)) {
     return migrateApiBase(apiBase).replace(/\/v1\/?$/, '') || DEFAULTS.shopUrl
   }
   return next

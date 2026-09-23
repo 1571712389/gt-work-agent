@@ -77,7 +77,7 @@ export default function ModelPicker() {
           aria-label="选择模型"
           className="absolute bottom-[calc(100%+8px)] left-0 z-30 w-72 overflow-hidden rounded-xl border border-line bg-white shadow-[0_8px_24px_rgba(15,23,42,0.08)]"
         >
-          <div className="border-b border-line px-3 py-2 text-[11px] text-muted">当前套餐可用模型</div>
+          <div className="border-b border-line px-3 py-2 text-[11px] text-muted">已开通的模型</div>
           <div className="max-h-72 overflow-auto p-1">
             {groups.map(([provider, list]) => (
               <div key={provider} className="mb-1 last:mb-0">

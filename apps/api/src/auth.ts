@@ -155,12 +155,11 @@ export function publicPackage(p: PackageRow) {
 export function entitlements(user: SessionUser) {
   const sub = activeSub(user.id)
   const pkg = sub?.pkg
-  const models = pkg
-    ? many<{ id: string; display_name: string; tools: number; enabled: number; provider_name: string }>(
-        `SELECT m.id, m.display_name, m.tools, m.enabled, COALESCE(p.name, '') AS provider_name
-         FROM models m LEFT JOIN providers p ON p.id = m.provider_id WHERE m.enabled = 1`,
-      ).filter((m) => (JSON.parse(pkg.models_json) as string[]).includes(m.id) || (JSON.parse(pkg.models_json) as string[]).includes('*'))
-    : []
+  const models = many<{ id: string; display_name: string; tools: number; enabled: number; kind: string | null; provider_name: string }>(
+    `SELECT m.id, m.display_name, m.tools, m.enabled, m.kind, COALESCE(p.name, '') AS provider_name
+     FROM models m JOIN providers p ON p.id = m.provider_id
+     WHERE m.enabled = 1 AND p.enabled = 1`,
+  )
   return {
     user,
     shopUrl: process.env.GT_SHOP_URL || 'http://127.0.0.1:8787',
@@ -188,7 +187,7 @@ export function entitlements(user: SessionUser) {
         name: m.display_name,
         tools: Boolean(m.tools),
         vision: Boolean(cat?.vision),
-        kind: cat?.kind || 'chat',
+        kind: (m.kind as 'chat' | 'image' | 'video' | null) || cat?.kind || 'chat',
         sizes: cat?.sizes || [],
         resolutions: cat?.resolutions || [],
         durations: cat?.durations || [],

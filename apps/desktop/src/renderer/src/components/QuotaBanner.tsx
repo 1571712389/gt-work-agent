@@ -1,4 +1,4 @@
-import { QUOTA_HINT, quotaExhausted } from '../lib/quota'
+import { quotaExhausted, quotaHint } from '../lib/quota'
 import { useApp } from '../lib/store'
 
 export default function QuotaBanner() {
@@ -6,7 +6,7 @@ export default function QuotaBanner() {
   if (!quotaExhausted(entitlements)) return null
   return (
     <div className="mb-3 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2.5">
-      <p className="text-xs leading-5 text-warn">{QUOTA_HINT}</p>
+      <p className="text-xs leading-5 text-warn">{quotaHint(entitlements)}</p>
       <div className="mt-2 flex flex-wrap gap-2">
         <button
           type="button"

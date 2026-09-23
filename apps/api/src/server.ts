@@ -293,8 +293,6 @@ const server = http.createServer(async (req, res) => {
         `INSERT INTO users (id, email, name, password_hash, password_set, role, status, created_at) VALUES (?, ?, ?, ?, 1, 'user', 'active', ?)`,
         [userId, email, name, hashPassword(password), now()],
       )
-      const trial = one<PackageRow>(`SELECT * FROM packages WHERE slug = 'trial'`)
-      if (trial) grantPackage(userId, trial)
       json(res, 201, {
         token: createSession(userId),
         user: { id: userId, email, name, role: 'user' },
@@ -373,8 +371,6 @@ const server = http.createServer(async (req, res) => {
         `INSERT INTO users (id, email, name, phone, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?, 'user', 'active', ?)`,
         [userId, email, name, phone, hashPassword(randomBytes(18).toString('hex')), now()],
       )
-      const trial = one<PackageRow>(`SELECT * FROM packages WHERE slug = 'trial'`)
-      if (trial) grantPackage(userId, trial)
       json(res, 201, {
         token: createSession(userId),
         user: { id: userId, email, name, phone, role: 'user' },
@@ -389,7 +385,15 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'POST' && path === '/v1/auth/login') {
       const body = await readJson(req)
-      const rawEmail = normalizeEmail(String(body.email || ''))
+      const typed = String(body.email || '').trim().toLowerCase()
+      const staffEmails = ['admin', 'admin@local', 'admin@qq.com']
+      const staffHit = staffEmails.includes(typed)
+        ? one<{ email: string }>(
+            'SELECT email FROM users WHERE role = ? AND email IN (?, ?, ?)',
+            ['admin', ...staffEmails],
+          )
+        : null
+      const rawEmail = staffHit?.email || normalizeEmail(typed)
       const existingRole = one<{ role: string }>('SELECT role FROM users WHERE email = ?', [rawEmail])
       const email = existingRole?.role === 'admin' ? rawEmail : shopMailbox(res, body.email)
       if (!email) return
@@ -652,6 +656,58 @@ const server = http.createServer(async (req, res) => {
       const user = requireUser(req, res)
       if (!user) return
       json(res, 200, entitlements(user))
+      return
+    }
+
+    if (method === 'GET' && path === '/v1/tasks') {
+      const user = requireUser(req, res)
+      if (!user) return
+      const rows = many<{ payload: string }>(
+        'SELECT payload FROM client_tasks WHERE user_id = ? ORDER BY updated_at DESC LIMIT 200',
+        [user.id],
+      )
+      const list = rows.flatMap((row) => {
+        try {
+          return [JSON.parse(row.payload)]
+        } catch {
+          return []
+        }
+      })
+      json(res, 200, { list })
+      return
+    }
+
+    if (method === 'PUT' && path.match(/^\/v1\/tasks\/[^/]+$/)) {
+      const user = requireUser(req, res)
+      if (!user) return
+      const taskId = decodeURIComponent(path.split('/')[3] || '')
+      const body = await readJson(req)
+      const payload = JSON.stringify({ ...body, id: taskId })
+      if (payload.length > 1_500_000) {
+        json(res, 413, { error: { message: '这条对话太长，暂时无法同步到账号' } })
+        return
+      }
+      const existing = one<{ user_id: string }>('SELECT user_id FROM client_tasks WHERE id = ?', [taskId])
+      if (existing && existing.user_id !== user.id) {
+        json(res, 403, { error: { message: '不能修改别人的对话' } })
+        return
+      }
+      const updatedAt = Number(body.updatedAt || now())
+      run(
+        `INSERT INTO client_tasks (id, user_id, payload, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+        [taskId, user.id, payload, updatedAt],
+      )
+      json(res, 200, { ok: true })
+      return
+    }
+
+    if (method === 'DELETE' && path.match(/^\/v1\/tasks\/[^/]+$/)) {
+      const user = requireUser(req, res)
+      if (!user) return
+      const taskId = decodeURIComponent(path.split('/')[3] || '')
+      run('DELETE FROM client_tasks WHERE id = ? AND user_id = ?', [taskId, user.id])
+      json(res, 200, { ok: true })
       return
     }
 
@@ -1320,6 +1376,6 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`光途Work API http://${HOST}:${PORT}`)
-  console.log('默认管理员 admin@local / admin123')
+  console.log('工作人员账号 admin，密码来自 GT_ADMIN_PASSWORD')
   startVendorBalanceWatch()
 })

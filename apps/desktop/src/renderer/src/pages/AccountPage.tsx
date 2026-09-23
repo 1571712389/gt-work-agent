@@ -245,7 +245,7 @@ export default function AccountPage() {
               {used >= 100 ? <p className="text-xs leading-5 text-warn">{QUOTA_HINT}</p> : null}
             </>
           ) : (
-            <p className="text-sm text-warn">{expired ? '套餐已到期，请续费后再使用。' : '暂无有效套餐，请先购买。'}</p>
+            <p className="text-sm text-warn">{expired ? '套餐已到期，请到官网充值后再使用。' : '当前账号还没有额度，请到官网充值后再使用。'}</p>
           )}
           {refreshNote ? (
             <p role="status" aria-live="polite" className={`text-xs ${refreshKind === 'warn' ? 'text-warn' : 'text-primary'}`}>

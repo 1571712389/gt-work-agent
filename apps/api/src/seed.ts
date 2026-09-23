@@ -43,11 +43,29 @@ const TRIAL_SKILLS = [
 ]
 
 function seedAdmin(): void {
-  if (one('SELECT id FROM users WHERE email = ?', ['admin@local'])) return
-  run(
-    `INSERT INTO users (id, email, name, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, 'admin', 'active', ?)`,
-    [id('usr_'), 'admin@local', '管理员', hashPassword(process.env.GT_ADMIN_PASSWORD || 'admin123'), now()],
+  const email = 'admin'
+  const legacy = one<{ id: string; email: string }>(
+    'SELECT id, email FROM users WHERE role = ? AND email IN (?, ?)',
+    ['admin', 'admin@local', 'admin@qq.com'],
   )
+  if (legacy && legacy.email !== email && !one('SELECT id FROM users WHERE email = ?', [email])) {
+    run('UPDATE users SET email = ? WHERE id = ?', [email, legacy.id])
+  }
+  if (!one('SELECT id FROM users WHERE email = ?', [email])) {
+    run(
+      `INSERT INTO users (id, email, name, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, 'admin', 'active', ?)`,
+      [id('usr_'), email, '管理员', hashPassword(process.env.GT_ADMIN_PASSWORD || 'admin123'), now()],
+    )
+  }
+  const password = process.env.GT_ADMIN_PASSWORD
+  if (password && !one('SELECT key FROM app_meta WHERE key = ?', ['admin_password_from_env'])) {
+    run('UPDATE users SET password_hash = ?, password_set = 1 WHERE email = ? AND role = ?', [
+      hashPassword(password),
+      email,
+      'admin',
+    ])
+    run(`INSERT INTO app_meta (key, value) VALUES ('admin_password_from_env', '1')`)
+  }
 }
 
 function seedPackages(): void {

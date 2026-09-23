@@ -34,7 +34,9 @@ function authHeaders(): Record<string, string> {
 }
 
 function historyPath(): string {
-  const dir = path.join(app.getPath('userData'), 'generations')
+  const settings = loadSettings()
+  const scope = (settings.userEmail || 'signed-in').trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_').slice(0, 80) || 'signed-in'
+  const dir = path.join(app.getPath('userData'), 'generations', scope)
   fs.mkdirSync(dir, { recursive: true })
   return path.join(dir, 'history.json')
 }
@@ -159,32 +161,25 @@ export async function generationStatus(id: string): Promise<GenerateJob> {
 
 export async function listGenerations(): Promise<GenerateJob[]> {
   const settings = loadSettings()
-  const local = readHistory()
-  if (!settings.apiKey) return local.filter((item) => !isFailed(item))
+  if (!settings.apiKey) return []
   try {
     const resp = await fetch(`${origin(settings.apiBase)}/v1/generate?limit=40`, { headers: authHeaders() })
     const body = await readJson<{ list?: GenerateJob[] }>(resp, '读取创作记录失败')
-    const remote = body.list || []
-    const merged = new Map<string, GenerateJob>()
-    for (const item of local.filter((job) => !isFailed(job))) merged.set(item.id, item)
-    for (const item of remote) {
-      if (isFailed(item)) {
-        merged.delete(item.id)
-        continue
-      }
-      const prev = merged.get(item.id)
-      merged.set(item.id, { ...item, localPath: prev?.localPath })
-    }
+    const localById = new Map(readHistory().map((item) => [item.id, item]))
     const list = await Promise.all(
-      [...merged.values()]
+      (body.list || [])
         .filter((item) => !isFailed(item))
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-        .map((item) => (item.status === 'succeeded' && !item.localPath ? materialize(item) : item)),
+        .map((item) => {
+          const prev = localById.get(item.id)
+          const next = { ...item, localPath: prev?.localPath }
+          return next.status === 'succeeded' && !next.localPath ? materialize(next) : next
+        }),
     )
     writeHistory(list)
     return list
   } catch {
-    return local.filter((item) => !isFailed(item))
+    return []
   }
 }
 

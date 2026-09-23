@@ -21,6 +21,11 @@
       me: null,
       tab: location.hash.slice(2) || 'overview',
       pricingPane: 'plans',
+      providerPane: 'vendors',
+      providerId: '',
+      providerModelId: '',
+      providerFlash: '',
+      providerFocusDone: false,
       pricingVendor: '',
       pricingModelId: '',
       pricingData: null,
@@ -458,14 +463,14 @@
           <div class="gate-card">
             <h2>工作人员登录</h2>
             <p class="muted">请使用管理员账号。没有注册入口。</p>
-            <label for="email">工作邮箱</label>
-            <input id="email" type="email" autocomplete="username">
+            <label for="email">账号</label>
+            <input id="email" type="text" autocomplete="username" value="admin">
             <label for="password">密码</label>
             <input id="password" type="password" autocomplete="current-password">
             <p class="err" id="err" role="alert">${opts.error || ''}</p>
             <p></p>
             <button class="btn" id="loginBtn">进入控制台</button>
-            <p class="muted" style="margin-top:14px">初始账号 <code>admin@local</code>，上线后请立刻改密。</p>
+            <p class="muted" style="margin-top:14px">工作人员账号 <code>admin</code>。</p>
           </div>
         </div>
       </div>`

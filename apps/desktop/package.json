@@ -34,6 +34,7 @@
     "vite": "^7.1.5"
   },
   "build": {
+    "electronVersion": "37.10.3",
     "appId": "com.guangtu.workbench",
     "productName": "光途Work",
     "directories": { "output": "release", "buildResources": "resources" },
@@ -44,7 +45,7 @@
       { "from": "../../packages/experts", "to": "packages/experts" },
       { "from": "resources/icon.png", "to": "icon.png" }
     ],
-    "win": { "target": ["nsis"] },
+    "win": { "target": ["nsis"], "artifactName": "GuangtuWork-Setup-${version}.${ext}" },
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
     "protocols": [{ "name": "光途Work", "schemes": ["gtwork"] }],
     "publish": [{ "provider": "generic", "url": "http://127.0.0.1:8787/updates" }]

@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url'
 import fs from 'node:fs'
 import { checkUpdate, fetchEntitlements, loginWithWebsite, logout } from './account'
 import { loadSettings, saveSettings } from './settings'
+import { pullTasks } from './store'
 import {
   allTasks,
   catalog,
@@ -102,7 +103,12 @@ function createWindow(): void {
     },
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
+  })
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
   mainWindow.on('close', (event) => {
     const hideToTray = app.isPackaged && loadSettings().closeToTray && !isQuitting
     if (hideToTray) {
@@ -128,7 +134,7 @@ function createTray(): void {
   tray.setToolTip('光途Work')
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: '打开主窗口', click: () => mainWindow?.show() },
+      { label: '打开主窗口', click: () => focusMain() },
       { type: 'separator' },
       {
         label: '退出',
@@ -139,7 +145,7 @@ function createTray(): void {
       },
     ]),
   )
-  tray.on('click', () => mainWindow?.show())
+  tray.on('click', () => focusMain())
 }
 
 function registerIpc(): void {
@@ -170,14 +176,17 @@ function registerIpc(): void {
   ipcMain.handle('app:checkUpdate', () => checkUpdate())
   ipcMain.handle('app:openShop', async () => {
     const settings = loadSettings()
-    await shell.openExternal(settings.shopUrl || 'http://127.0.0.1:8787')
+    await shell.openExternal(settings.shopUrl || 'http://43.139.61.253:8787')
   })
   ipcMain.handle('app:openUrl', async (_e, raw: string) => {
     const url = String(raw || '')
     if (!/^https?:\/\//i.test(url)) throw new Error('仅允许打开网页链接')
     await shell.openExternal(url)
   })
-  ipcMain.handle('tasks:list', () => allTasks())
+  ipcMain.handle('tasks:list', async () => {
+    await pullTasks()
+    return allTasks()
+  })
   ipcMain.handle('tasks:create', (_e, input) => createTask(input))
   ipcMain.handle('tasks:patch', (_e, id: string, patch) => patchTask(id, patch))
   ipcMain.handle('tasks:send', async (_e, taskId: string, text: string, files: string[], executePlan?: boolean) => {
@@ -227,7 +236,8 @@ function registerIpc(): void {
 function handleDeepLink(raw: string): void {
   try {
     const parsed = new URL(raw)
-    mainWindow?.webContents.send('app:deep-link', {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('app:deep-link', {
       url: raw,
       host: parsed.hostname,
       path: parsed.pathname,
@@ -238,11 +248,37 @@ function handleDeepLink(raw: string): void {
   }
 }
 
+function windowAlive(win: BrowserWindow | null): win is BrowserWindow {
+  if (!win) return false
+  try {
+    return !win.isDestroyed()
+  } catch {
+    return false
+  }
+}
+
 function focusMain(): void {
-  if (!mainWindow) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.show()
-  mainWindow.focus()
+  const open = (): void => {
+    try {
+      if (!windowAlive(mainWindow)) {
+        mainWindow = null
+        createWindow()
+        return
+      }
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    } catch {
+      mainWindow = null
+      try {
+        createWindow()
+      } catch {
+        /* 窗口已销毁时忽略，避免主进程弹窗退出 */
+      }
+    }
+  }
+  if (app.isReady()) open()
+  else void app.whenReady().then(open)
 }
 
 if (process.defaultApp) {
@@ -278,8 +314,7 @@ if (!gotLock) {
     await connectApprovedMcp()
     // MCP 子进程日志已过滤 npm 弃用提示，避免误判为启动失败
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
-      else mainWindow?.show()
+      focusMain()
     })
   })
 }
@@ -289,5 +324,7 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin' && !loadSettings().closeToTray) app.quit()
+  if (process.platform === 'darwin') return
+  if (app.isPackaged && loadSettings().closeToTray && !isQuitting) return
+  app.quit()
 })

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Clapperboard, Download, FolderOpen, ImagePlus, Images, LoaderCircle, X } from 'lucide-react'
 import type { GenerateJob } from '@shared/protocol'
 import { useApp } from '../lib/store'
-import { QUOTA_HINT, quotaExhausted } from '../lib/quota'
+import { quotaExhausted, quotaHint } from '../lib/quota'
 import PageShell from '../components/PageShell'
 import QuotaBanner from '../components/QuotaBanner'
 
@@ -248,7 +248,7 @@ export default function StudioPage() {
   const submit = async () => {
     if (!current || busy) return
     if (quotaExhausted(entitlements)) {
-      setError(QUOTA_HINT)
+      setError(quotaHint(entitlements))
       return
     }
     if (kind === 'video' && pendingVideo) {
