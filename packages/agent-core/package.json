@@ -1,0 +1,24 @@
+{
+  "name": "@gt-workbench/agent-core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "tsx --test src/sandbox.test.ts",
+    "verify": "tsx src/verify-wave1.ts"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "gray-matter": "^4.0.3",
+    "pptxgenjs": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

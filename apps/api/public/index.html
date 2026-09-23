@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>光途Work · 本机 AI Agent 工作台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/site.css" />
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/home"><img src="/logo.jpg" alt="" />光途Work</a>
+    <button class="nav-toggle" type="button" id="navToggle" aria-label="菜单" aria-expanded="false" aria-controls="siteNav">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="mid" id="siteNav">
+      <a href="#/home" data-anchor="top">产品</a>
+      <a href="#/home" data-anchor="ability">能力</a>
+      <a href="#/home" data-anchor="scenes">场景</a>
+      <a href="#/packages">套餐</a>
+    </nav>
+    <div class="right" id="nav"></div>
+  </header>
+  <div id="app"></div>
+  <footer class="footer">
+    <div class="footer-inner">
+      <span>光途Work · 本机 AI 工作台</span>
+      <div class="footer-links">
+        <a href="/terms.html">用户协议</a>
+        <a href="/privacy.html">隐私政策</a>
+        <a class="beian" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">赣ICP备2024044295号-5</a>
+      </div>
+    </div>
+  </footer>
+  <script>
+    const $ = (id) => document.getElementById(id)
+    const state = { token: localStorage.getItem('gt_token') || '', me: null }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        ...opts,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}),
+          ...(opts.headers || {}),
+        },
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error?.message || res.statusText)
+      return data
+    }
+    function parseHash() {
+      const raw = (location.hash.replace(/^#\/?/, '') || 'home')
+      const qi = raw.indexOf('?')
+      const path = qi >= 0 ? raw.slice(0, qi) : raw
+      const query = Object.fromEntries(new URLSearchParams(qi >= 0 ? raw.slice(qi + 1) : ''))
+      const parts = path.split('/').filter(Boolean)
+      return { route: parts[0] || 'home', parts, query }
+    }
+    function go(name) { location.hash = '#/' + name }
+    function route() { return parseHash().route }
+    function money(fen) {
+      const n = (fen || 0) / 100
+      return '¥' + (Number.isInteger(n) ? String(n) : n.toFixed(2))
+    }
+    function glyph(name) { return (name || '用').slice(0, 1).toUpperCase() }
+
+    function completeQqEmail(input) {
+      let value = String(input || '').trim().toLowerCase().replace(/\s+/g, '')
+      if (!value) return value
+      if (!value.includes('@')) return value + '@qq.com'
+      if (value.endsWith('@')) return value + 'qq.com'
+      return value
+    }
+    function isQqMailbox(email) {
+      return /^[^\s@]+@qq\.com$/.test(email)
+    }
+    function bindQqEmail(id) {
+      const el = $(id)
+      if (!el) return
+      const apply = () => { el.value = completeQqEmail(el.value) }
+      el.addEventListener('blur', apply)
+      el.addEventListener('change', apply)
+    }
+    function qqEmailValue(id) {
+      const el = $(id)
+      if (!el) return ''
+      el.value = completeQqEmail(el.value)
+      const email = el.value
+      if (!isQqMailbox(email)) throw new Error('当前验证码只发到 QQ 邮箱。请填写 QQ 号，将自动补全 @qq.com')
+      return email
+    }
+    const qqEmailField = (id, labelFor) => `<div class="field">
+            <label for="${labelFor}">QQ 邮箱</label>
+            <input id="${id}" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="QQ 号，自动补全 @qq.com">
+            <p class="hint">暂只支持 QQ 邮箱</p>
+          </div>`
+
+    function desktopDeviceId() {
+      const h = parseHash()
+      if (h.route === 'authorize' && h.parts[1]) return h.parts[1]
+      return sessionStorage.getItem('gt_desktop_device') || h.query.device || ''
+    }
+
+    async function finishAuth(token) {
+      state.token = token
+      localStorage.setItem('gt_token', token)
+      await loadMe()
+      const device = desktopDeviceId()
+      if (device) {
+        sessionStorage.setItem('gt_desktop_device', device)
+        location.hash = '#/authorize/' + device
+        return
+      }
+      go('account')
+    }
+
+    function nav() {
+      const logged = Boolean(state.token && state.me?.user)
+      if (!logged) {
+        $('nav').innerHTML = '<a class="plain" href="#/login">登录</a><a class="btn sm" href="#/register">领取体验版</a>'
+        return
+      }
+      const u = state.me.user
+      $('nav').innerHTML = `<a class="plain" href="#/account">账户</a>
+        <a class="plain" href="#/orders">订单</a>
+        <div class="session"><span class="avatar">${glyph(u.name || u.email)}</span><span class="name">${u.name || '用户'}</span></div>
+        <button class="btn sm ghost" id="logout">退出</button>`
+      $('logout').onclick = () => {
+        state.token = ''; localStorage.removeItem('gt_token'); state.me = null; go('home')
+      }
+    }
+
+    async function loadMe() {
+      if (!state.token) { state.me = null; return }
+      try { state.me = await api('/v1/me') }
+      catch { state.token = ''; localStorage.removeItem('gt_token'); state.me = null }
+    }
+
+    function bindBuy(root) {
+      root.querySelectorAll('[data-id]').forEach((btn) => btn.onclick = async () => {
+        if (!state.token) return go('login')
+        btn.disabled = true
+        try {
+          const order = await api('/v1/orders', { method: 'POST', body: { packageId: btn.dataset.id, payMethod: 'mock', coupon: $('coupon')?.value } })
+          if (order.status === 'paid') { await loadMe(); go('account'); return }
+          location.hash = '#/pay/' + order.id
+        } catch (e) { alert(e.message) }
+        finally { btn.disabled = false }
+      })
+    }
+
+    function claimedIds() {
+      return new Set(state.me?.claimedPackageIds || [])
+    }
+    function isTrialPkg(p) {
+      return p.priceFen === 0 || p.slug === 'trial' || /体验/.test(p.name || '')
+    }
+    function hasClaimedTrial(list) {
+      const ids = claimedIds()
+      return (list || []).some((p) => isTrialPkg(p) && ids.has(p.id))
+        || state.me?.subscription?.packageSlug === 'trial'
+    }
+
+    function planItems(p) {
+      const trial = isTrialPkg(p)
+      const team = Boolean(p.allowTeam)
+      const allModels = (p.models || []).includes('*')
+      const skills = p.skills || []
+      const allSkills = skills.includes('*')
+      const seats = Math.max(1, Number(p.seats || 1))
+      const together = Math.max(1, Number(p.maxConcurrency || 1))
+      const rows = [
+        ['额度', trial ? '入门额度，先试对话和识图' : team ? '充裕额度，适合多人一起用' : '标准额度，适合个人日常使用'],
+        ['周期', `${p.periodDays} 天。额度显示到 100% 后，对话、创作和连接会暂停，充值后可继续`],
+        ['对话', '问一问、想一想、做一做。想一想先出方案，确认后再执行，生成中可以暂停'],
+        ['模型', allModels ? '全部已接入模型，含对话、识图、生图与生视频' : trial ? 'DeepSeek 对话与识图' : '多模型对话、识图，以及生图、生视频'],
+        ['技能', allSkills ? '技能市场全部技能，下载后在对话里输入 / 选用' : `${skills.length} 个办公技能，例如日报、纪要、表格和邮件`],
+        ['文件', '每个任务有自己的工作空间，文件默认留在本机。可拖入或粘贴截图'],
+      ]
+      if (p.allowMcp) rows.push(['连接', '钉钉、飞书、企业微信、GitHub 等。钉钉用浏览器登录自己的企业账号'])
+      if (team) rows.push(['协作', `专家团可拆开并行处理。项目空间能绑目录、指令和技能。${seats} 个席位`])
+      else if (!trial) rows.push(['专家', '可点选专家，对话按该人设工作'])
+      if (together > 1) rows.push(['并行', `最多 ${together} 个任务同时进行`])
+      else rows.push(['使用', '单人使用，一次处理一个任务'])
+      return rows
+    }
+    function plansHtml(list) {
+      const ids = claimedIds()
+      const current = state.me?.subscription?.packageId
+      return `<div class="plans">${list.map((p, i) => {
+          const featured = /专业|pro/i.test(p.slug + p.name) || (list.length > 1 && i === 1)
+          const claimed = isTrialPkg(p) && (ids.has(p.id) || current === p.id)
+          const currentPaid = !isTrialPkg(p) && current === p.id
+          let action = `<button class="btn" data-id="${p.id}">${p.priceFen === 0 ? '领取体验版' : '购买'}</button>`
+          if (claimed) action = `<button class="btn ghost" disabled>已领取</button>`
+          else if (currentPaid) action = `<button class="btn ghost" disabled>当前套餐</button>`
+          const rows = planItems(p).map(([label, text]) => `<li><b>${label}</b><span>${text}</span></li>`).join('')
+          return `<article class="plan${featured ? ' featured' : ''}${claimed || currentPaid ? ' claimed' : ''}">
+            <h3>${p.name}${featured ? ' <span class="badge">推荐</span>' : ''}${claimed ? ' <span class="badge">已领取</span>' : ''}</h3>
+            <div class="price">${p.priceFen === 0 ? '免费' : money(p.priceFen)}<span> / ${p.periodDays} 天</span></div>
+            <p class="muted">${p.description}</p>
+            <ul class="plan-list">${rows}</ul>
+            ${action}
+          </article>`
+        }).join('')}</div>
+        <details class="coupon-fold">
+          <summary>有优惠码？</summary>
+          <label for="coupon">优惠码</label>
+          <input id="coupon" placeholder="选填">
+        </details>
+        <section class="recharge" id="recharge">
+          <div>
+            <h3>自定义充值</h3>
+            <p class="muted">额度不够时按金额补充。不会更换当前套餐，到期日也不变。</p>
+          </div>
+          <form class="recharge-form" id="rechargeForm">
+            <label for="rechargeYuan">充值金额（元）</label>
+            <div class="code-row">
+              <input id="rechargeYuan" inputmode="decimal" min="1" max="10000" step="1" placeholder="1 – 10000" aria-describedby="rechargeHint">
+              <button class="btn" type="submit">去支付</button>
+            </div>
+            <p class="hint" id="rechargeHint" role="status">最低 1 元，最高 10000 元。登录后按当前套餐显示大约补回多少额度。</p>
+          </form>
+        </section>`
+    }
+
+    function bindRecharge(root) {
+      const form = root.querySelector('#rechargeForm')
+      const input = root.querySelector('#rechargeYuan')
+      const hint = root.querySelector('#rechargeHint')
+      if (!form || !input || !hint) return
+      const saved = sessionStorage.getItem('gt_recharge_yuan')
+      if (saved) {
+        input.value = saved
+        sessionStorage.removeItem('gt_recharge_yuan')
+      }
+      let timer = 0
+      const preview = async () => {
+        const yuan = Number(input.value)
+        if (!Number.isFinite(yuan) || yuan < 1) {
+          hint.textContent = '请输入 1 元到 10000 元'
+          return
+        }
+        if (yuan > 10000) {
+          hint.textContent = '单次最高 10000 元'
+          return
+        }
+        if (!state.token) {
+          hint.textContent = '登录后按当前套餐计算大约补回多少额度'
+          return
+        }
+        try {
+          const data = await api('/v1/recharge/preview', { method: 'POST', body: { yuan } })
+          hint.textContent = data.hint
+        } catch (e) {
+          hint.textContent = e.message
+        }
+      }
+      input.addEventListener('input', () => {
+        clearTimeout(timer)
+        timer = window.setTimeout(() => { void preview() }, 280)
+      })
+      if (input.value) void preview()
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault()
+        const yuan = Number(input.value)
+        if (!Number.isFinite(yuan) || yuan < 1 || yuan > 10000) {
+          hint.textContent = '请输入 1 元到 10000 元'
+          return
+        }
+        if (!state.token) {
+          sessionStorage.setItem('gt_recharge_yuan', String(yuan))
+          sessionStorage.setItem('gt_anchor', 'recharge')
+          go('login')
+          return
+        }
+        const btn = form.querySelector('button')
+        if (btn) btn.disabled = true
+        try {
+          const order = await api('/v1/orders', {
+            method: 'POST',
+            body: { rechargeYuan: yuan, payMethod: 'mock', coupon: $('coupon')?.value },
+          })
+          if (order.status === 'paid') {
+            await loadMe()
+            go('account')
+            return
+          }
+          location.hash = '#/pay/' + order.id
+        } catch (e) {
+          hint.textContent = e.message
+          if (btn) btn.disabled = false
+        }
+      })
+    }
+
+    const icon = (path) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`
+    function homePage(list) {
+      const trialDone = state.token && hasClaimedTrial(list)
+      const primary = trialDone
+        ? '<a class="btn" href="#/account">进入账户</a>'
+        : state.token
+          ? '<a class="btn" href="#/packages">领取体验版</a>'
+          : '<a class="btn" href="#/register">领取体验版</a>'
+      return `<div class="home">
+        <section class="hero-band" id="top">
+          <div class="mesh" aria-hidden="true"></div>
+          <div class="hero reveal">
+            <p class="kicker">桌面 AI 工作台</p>
+            <h1>在你的电脑上，把工作做完</h1>
+            <p class="lede">对话、方案、图片视频、技能和连接器，都在光途Work 客户端里完成。文件留在本机，登录即可使用，不用自己准备模型密钥。</p>
+            <div class="cta-row">${primary}<a class="btn ghost" href="#/packages">查看套餐</a></div>
+            <ul class="hero-points">
+              <li>问一问、想一想、做一做</li>
+              <li>粘贴截图即可识图</li>
+              <li>钉钉浏览器登录，不用建应用</li>
+            </ul>
+          </div>
+          <div class="preview-wrap reveal">
+            <div class="window window-float" aria-hidden="true">
+              <div class="win-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="win-title">光途Work</span></div>
+              <div class="win-body">
+                <aside class="win-side">
+                  <div class="win-app"><img src="/logo.jpg" alt="" />光途Work</div>
+                  <div class="win-app-sub">每个任务独立工作空间</div>
+                  <div class="win-new">新建任务</div>
+                  <div class="win-item on">本周工作日报</div>
+                  <div class="win-item">整理会议纪要</div>
+                  <div class="win-item">产品概念图</div>
+                </aside>
+                <div class="win-chat">
+                  <div class="win-modes"><span class="on">做一做</span><span>想一想</span><span>问一问</span></div>
+                  <div class="bubble me">把今天的工作整理成日报，用表格列出进度</div>
+                  <div class="bubble">已写好表格，并保存到工作空间 /日报.md</div>
+                  <div class="composer">输入任务，或输入 / 选择技能</div>
+                </div>
+                <aside class="win-right">
+                  <b>工作空间</b>
+                  <div class="win-file"><i></i>日报.md</div>
+                  <div class="win-file"><i></i>纪要.docx</div>
+                  <div class="win-file"><i></i>概念图.png</div>
+                </aside>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="band" id="ability">
+          <div class="section">
+            <div class="section-head reveal">
+              <h2>客户端里能做什么</h2>
+              <p class="muted">下面这些能力都在桌面客户端中，官网负责注册、购买和充值。</p>
+            </div>
+            <div class="features">
+              <article class="mini reveal">
+                ${icon('M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01')}
+                <b>任务对话</b>
+                <p>问一问用来查阅，想一想先出方案、确认后再执行，做一做直接落地。生成过程中可以随时暂停。</p>
+              </article>
+              <article class="mini reveal">
+                ${icon('M4 7h16v10H4zM8 7V5h8v2')}
+                <b>识图与附件</b>
+                <p>把截图、图片或文档拖进对话框，也可以直接粘贴。需要看图时会自动换到可识图的模型。</p>
+              </article>
+              <article class="mini reveal">
+                ${icon('M4 16l4.5-4.5 3 3L16 9l4 4M8 8h.01')}
+                <b>图片与视频</b>
+                <p>在创作里用文字生成图片或视频。完成后下载到本机，视频生成时会一直显示进度。</p>
+              </article>
+              <article class="mini reveal">
+                ${icon('M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z')}
+                <b>技能与专家</b>
+                <p>技能下载到本机后，在对话里输入 / 选用。点选专家按该人设工作，专家团会把任务拆开并行处理。</p>
+              </article>
+              <article class="mini reveal">
+                ${icon('M8 12h8M12 8v8M5 12a7 7 0 1 0 14 0 7 7 0 0 0-14 0')}
+                <b>连接器</b>
+                <p>可连接钉钉、飞书、企业微信、GitHub 等。钉钉登录的是你自己的企业账号，用来提交日志，不用创建应用或填写密钥。</p>
+              </article>
+              <article class="mini reveal">
+                ${icon('M4 7h6l2 2h8v8H4z')}
+                <b>项目空间</b>
+                <p>把工作目录、指令、技能和专家绑在一起。之后新建任务会直接套用，不用每次重选。</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="section scenes-wrap" id="scenes">
+          <div class="section-head reveal">
+            <h2>常见用法</h2>
+            <p class="muted">选一个场景，看它在客户端里怎么完成。</p>
+          </div>
+          <div class="scene-tabs" role="tablist">
+            <button type="button" class="on" role="tab" aria-selected="true" data-scene-tab="daily">整理日报</button>
+            <button type="button" role="tab" aria-selected="false" data-scene-tab="plan">先想后做</button>
+            <button type="button" role="tab" aria-selected="false" data-scene-tab="studio">图片与视频</button>
+            <button type="button" role="tab" aria-selected="false" data-scene-tab="ding">提交钉钉日志</button>
+          </div>
+          <div class="scene-stage">
+            <article class="scene-panel on" data-scene-panel="daily">
+              <div>
+                <h3>把一天的工作收成一份日报</h3>
+                <p>在任务里选择「做一做」，说明要表格还是条目。结果会写进当前工作空间，右侧可以直接打开文件。</p>
+                <ul>
+                  <li>每个任务有自己的文件夹</li>
+                  <li>可以拖入会议纪要当材料</li>
+                  <li>文件默认留在本机</li>
+                </ul>
+              </div>
+              <div class="scene-card" aria-hidden="true">
+                <div class="scene-kicker">做一做 · 本周工作日报</div>
+                <div class="bubble me">整理今天完成的事项，输出 Markdown 表格</div>
+                <div class="bubble">已保存到工作空间 /日报.md</div>
+              </div>
+            </article>
+            <article class="scene-panel" data-scene-panel="plan">
+              <div>
+                <h3>复杂任务先出方案，再动手</h3>
+                <p>「想一想」会先给出步骤。你确认后，再按方案执行。方向不对时，停在方案这一步即可。</p>
+                <ul>
+                  <li>先看计划，再决定是否执行</li>
+                  <li>执行中可以暂停</li>
+                  <li>适合改代码、整理资料、做演示稿</li>
+                </ul>
+              </div>
+              <div class="scene-card" aria-hidden="true">
+                <div class="scene-kicker">想一想 · 待确认方案</div>
+                <div class="scene-step"><i>1</i>核对现有材料</div>
+                <div class="scene-step"><i>2</i>列出改动范围</div>
+                <div class="scene-step"><i>3</i>确认后再写入文件</div>
+              </div>
+            </article>
+            <article class="scene-panel" data-scene-panel="studio">
+              <div>
+                <h3>用一句话生成图片或视频</h3>
+                <p>打开客户端的「创作」，选择图片或视频，写上画面描述。生成完成后下载到本机预览。</p>
+                <ul>
+                  <li>图片可选尺寸</li>
+                  <li>视频可选时长和比例</li>
+                  <li>体验版不含生图、生视频，需升级套餐</li>
+                </ul>
+              </div>
+              <div class="scene-card" aria-hidden="true">
+                <div class="scene-kicker">创作 · 图片</div>
+                <div class="scene-canvas"></div>
+                <div class="scene-caption">概念图已下载到本机</div>
+              </div>
+            </article>
+            <article class="scene-panel" data-scene-panel="ding">
+              <div>
+                <h3>用已登录的钉钉身份提交日志</h3>
+                <p>在连接页添加钉钉，浏览器里登录你自己的企业账号。之后可以在对话里按模板提交日志。组织若未开放，向管理员申请「CLI 访问管理」即可。</p>
+                <ul>
+                  <li>不需要创建企业内部应用</li>
+                  <li>不需要填写 AppKey 或密钥</li>
+                  <li>日志以你登录的身份提交</li>
+                </ul>
+              </div>
+              <div class="scene-card" aria-hidden="true">
+                <div class="scene-kicker">连接 · 钉钉</div>
+                <div class="scene-step"><i>1</i>浏览器登录企业账号</div>
+                <div class="scene-step"><i>2</i>选择日志模板</div>
+                <div class="scene-step"><i>3</i>在对话里提交</div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="band" id="flow">
+          <div class="section">
+            <div class="section-head reveal">
+              <h2>三步开始</h2>
+              <p class="muted">密码只在官网填写。客户端通过授权登录，不用配置厂商密钥。</p>
+            </div>
+            <ol class="steps">
+              <li class="reveal"><span>1</span><b>注册并领取体验版</b><p>用 QQ 邮箱完成注册。体验版即可开始对话。</p></li>
+              <li class="reveal"><span>2</span><b>授权桌面客户端</b><p>在客户端点「打开官网登录」，回到这里点「授权并打开客户端」。</p></li>
+              <li class="reveal"><span>3</span><b>在本机开始任务</b><p>选定工作文件夹，输入第一句话。文件写在你的电脑上。</p></li>
+            </ol>
+          </div>
+        </section>
+
+        <section class="section" id="packages">
+          <div class="section-head reveal">
+            <h2>选择套餐</h2>
+            <p class="muted">买的是工作台使用权。额度显示到 100% 后，对话、创作和连接会暂停，充值后即可继续。</p>
+          </div>
+          <div class="reveal">${plansHtml(list)}</div>
+        </section>
+
+        <section class="band">
+          <div class="section">
+            <div class="section-head reveal">
+              <h2>常见问题</h2>
+            </div>
+            <div class="faq">
+              <details class="reveal"><summary>需要自己准备密钥吗？</summary><p>不需要。登录光途Work 账号即可，模型由平台接入。</p></details>
+              <details class="reveal"><summary>文件会不会被上传？</summary><p>工作空间文件默认留在本机。只有任务明确读取并发送给模型时，相关内容才会离开本机。</p></details>
+              <details class="reveal"><summary>额度到 100% 怎么办？</summary><p>对话、创作和连接会暂停，并引导你来官网充值。充值后回到客户端账户页，点「刷新额度」即可继续。</p></details>
+              <details class="reveal"><summary>如何登录桌面客户端？</summary><p>在客户端点「打开官网登录」，在本站登录后授权即可，不必在客户端填写密码。</p></details>
+              <details class="reveal"><summary>钉钉要创建应用吗？</summary><p>不用。在客户端连接钉钉，用浏览器登录你自己的企业账号。若提示未开放，请管理员在钉钉里打开「CLI 访问管理」。</p></details>
+              <details class="reveal"><summary>可以开发票吗？</summary><p>登录后到账户页填写抬头和税号提交即可。开具进度可在订单页查看。</p></details>
+            </div>
+          </div>
+        </section>
+
+        <section class="closing reveal">
+          <h2>先领体验版，在自己的电脑上试一次</h2>
+          <p>注册、购买和充值都在这里完成。工作本身留在桌面客户端。</p>
+          <div class="cta-row">${primary}<a class="btn ghost" href="#/login">已有账号，登录</a></div>
+        </section>
+      </div>`
+    }
+
+    function bindScenes(root) {
+      const tabs = [...root.querySelectorAll('[data-scene-tab]')]
+      const panels = [...root.querySelectorAll('[data-scene-panel]')]
+      tabs.forEach((tab) => {
+        tab.onclick = () => {
+          const id = tab.dataset.sceneTab
+          tabs.forEach((item) => {
+            const on = item === tab
+            item.classList.toggle('on', on)
+            item.setAttribute('aria-selected', String(on))
+          })
+          panels.forEach((panel) => {
+            const on = panel.dataset.scenePanel === id
+            panel.classList.toggle('on', on)
+            if (!on) panel.classList.remove('scene-in')
+          })
+          const next = panels.find((panel) => panel.dataset.scenePanel === id)
+          if (next) requestAnimationFrame(() => next.classList.add('scene-in'))
+        }
+      })
+      panels.find((panel) => panel.classList.contains('on'))?.classList.add('scene-in')
+    }
+
+    function bindReveal(root) {
+      const nodes = [...root.querySelectorAll('.reveal')]
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      if (reduce || !('IntersectionObserver' in window)) {
+        nodes.forEach((node) => node.classList.add('in'))
+        return
+      }
+      const io = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return
+          entry.target.classList.add('in')
+          io.unobserve(entry.target)
+        })
+      }, { threshold: 0.16, rootMargin: '0px 0px -8% 0px' })
+      nodes.forEach((node) => io.observe(node))
+    }
+
+    function scrollToAnchor(id) {
+      const el = id === 'top' ? document.getElementById('top') : document.getElementById(id)
+      if (!el) return
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
+    }
+
+    async function render() {
+      await loadMe()
+      nav()
+      const r = route()
+      const app = $('app')
+      try {
+        if (r === 'login' || r === 'register') {
+          const isReg = r === 'register'
+          const device = desktopDeviceId()
+          if (device) sessionStorage.setItem('gt_desktop_device', device)
+          const banner = device
+            ? '<p class="banner">登录后将授权光途Work 桌面客户端。不要在客户端里填邮箱密码。</p>'
+            : ''
+          app.innerHTML = isReg ? `<div class="wrap"><div class="card auth">
+            <h2 class="page-title">注册</h2>
+            <p class="muted">用 QQ 邮箱验证后设置密码。</p>
+            ${banner}
+            <div class="field">
+              <label for="name">名称（可选）</label>
+              <input id="name" autocomplete="name" placeholder="怎么称呼你">
+            </div>
+            ${qqEmailField('email', 'email')}
+            <div class="field">
+              <label for="code">邮箱验证码</label>
+              <div class="code-row">
+                <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位验证码">
+                <button class="btn ghost" type="button" id="sendCode">获取验证码</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="password">设置密码</label>
+              <input id="password" type="password" autocomplete="new-password" placeholder="至少 6 位">
+            </div>
+            <div class="field">
+              <label for="password2">确认密码</label>
+              <input id="password2" type="password" autocomplete="new-password" placeholder="再输入一次">
+            </div>
+            <p class="err" id="err" role="alert"></p>
+            <p class="hint" id="hint" role="status"></p>
+            <label class="agree"><input id="agree" type="checkbox"> 我已阅读并同意 <a href="/terms.html" target="_blank" rel="noopener">用户协议</a> 和 <a href="/privacy.html" target="_blank" rel="noopener">隐私政策</a></label>
+            <div class="actions"><button class="btn" id="go">验证并注册</button></div>
+            <p class="auth-extra muted"><a href="#/login">已有账号？登录</a></p>
+          </div></div>` : `<div class="wrap"><div class="card auth">
+            <h2 class="page-title">登录</h2>
+            <p class="muted">使用 QQ 邮箱登录。</p>
+            ${banner}
+            <div class="auth-tabs" role="tablist">
+              <button type="button" class="on" id="tabPass" role="tab" aria-selected="true">密码登录</button>
+              <button type="button" id="tabCode" role="tab" aria-selected="false">验证码登录</button>
+            </div>
+            <div class="auth-pane on" id="panePass">
+              ${qqEmailField('email', 'email')}
+              <div class="field">
+                <label for="password">密码</label>
+                <input id="password" type="password" autocomplete="current-password">
+              </div>
+              <p class="err" id="err" role="alert"></p>
+              <p class="hint" id="hint" role="status"></p>
+              <div class="actions"><button class="btn" id="emailGo">登录</button></div>
+              <p class="auth-extra muted"><a href="#/forgot">忘记密码</a></p>
+            </div>
+            <div class="auth-pane" id="paneCode">
+              ${qqEmailField('email2', 'email2')}
+              <div class="field">
+                <label for="code">邮箱验证码</label>
+                <div class="code-row">
+                  <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位验证码">
+                  <button class="btn ghost" type="button" id="sendCode">获取验证码</button>
+                </div>
+              </div>
+              <p class="err" id="err2" role="alert"></p>
+              <p class="hint" id="hint2" role="status"></p>
+              <div class="actions"><button class="btn" id="go">登录</button></div>
+            </div>
+            <p class="auth-extra muted"><a href="#/register">没有账号？注册</a></p>
+          </div></div>`
+          bindQqEmail('email')
+          bindQqEmail('email2')
+          let left = 0
+          let timer = 0
+          const showErr = (msg) => {
+            ;['err', 'err2'].forEach((id) => { const el = $(id); if (el) el.textContent = msg })
+          }
+          const showHint = (msg) => {
+            ;['hint', 'hint2'].forEach((id) => { const el = $(id); if (el) el.textContent = msg })
+          }
+          const tick = (btnId) => {
+            const btn = $(btnId)
+            if (!btn) return
+            if (left <= 0) { btn.disabled = false; btn.textContent = btnId === 'sendSms' ? '获取短信' : '获取验证码'; return }
+            btn.disabled = true
+            btn.textContent = left + 's'
+            timer = window.setTimeout(() => { left -= 1; tick(btnId) }, 1000)
+          }
+          const tabPass = $('tabPass')
+          const tabCode = $('tabCode')
+          if (tabPass && tabCode) {
+            const switchTab = (pass) => {
+              tabPass.classList.toggle('on', pass)
+              tabCode.classList.toggle('on', !pass)
+              tabPass.setAttribute('aria-selected', String(pass))
+              tabCode.setAttribute('aria-selected', String(!pass))
+              $('panePass').classList.toggle('on', pass)
+              $('paneCode').classList.toggle('on', !pass)
+              const from = pass ? $('email2') : $('email')
+              const to = pass ? $('email') : $('email2')
+              if (from && to) {
+                to.value = completeQqEmail(from.value || to.value)
+              }
+            }
+            tabPass.onclick = () => switchTab(true)
+            tabCode.onclick = () => switchTab(false)
+          }
+          const sendCode = $('sendCode')
+          if (sendCode) sendCode.onclick = async () => {
+            showErr(''); showHint('')
+            sendCode.disabled = true
+            try {
+              const email = qqEmailValue($('email2') ? 'email2' : 'email')
+              const data = await api('/v1/auth/email/send', { method: 'POST', body: { email, purpose: isReg ? 'register' : 'login' } })
+              showHint(data.message)
+              left = data.retryAfter || 60
+              clearTimeout(timer)
+              tick('sendCode')
+            } catch (e) {
+              showErr(e.message)
+              sendCode.disabled = false
+            }
+          }
+          const goBtn = $('go')
+          if (goBtn) goBtn.onclick = async () => {
+            goBtn.disabled = true
+            showErr('')
+            try {
+              if (isReg) {
+                if (!$('agree')?.checked) throw new Error('请先阅读并同意用户协议和隐私政策')
+                if ($('password').value !== $('password2').value) throw new Error('两次输入的密码不一致')
+                const data = await api('/v1/auth/email/register', {
+                  method: 'POST',
+                  body: { email: qqEmailValue('email'), code: $('code').value, name: $('name')?.value, password: $('password').value },
+                })
+                await finishAuth(data.token)
+              } else {
+                const data = await api('/v1/auth/email/login', {
+                  method: 'POST',
+                  body: { email: qqEmailValue($('email2') ? 'email2' : 'email'), code: $('code').value },
+                })
+                await finishAuth(data.token)
+              }
+            } catch (e) { showErr(e.message) }
+            finally { goBtn.disabled = false }
+          }
+          const emailGo = $('emailGo')
+          if (emailGo) emailGo.onclick = async () => {
+            emailGo.disabled = true
+            showErr('')
+            try {
+              const data = await api('/v1/auth/login', { method: 'POST', body: { email: qqEmailValue('email'), password: $('password').value } })
+              await finishAuth(data.token)
+            } catch (e) { showErr(e.message) }
+            finally { emailGo.disabled = false }
+          }
+          const pw = $('password')
+          if (pw && !isReg) pw.onkeydown = (ev) => { if (ev.key === 'Enter') emailGo?.click() }
+          const sendSms = $('sendSms')
+          if (sendSms) sendSms.onclick = async () => {
+            showErr('')
+            sendSms.disabled = true
+            try {
+              const data = await api('/v1/auth/sms/send', { method: 'POST', body: { phone: $('phone').value, purpose: 'login' } })
+              showHint(data.message)
+              left = data.retryAfter || 60
+              clearTimeout(timer)
+              tick('sendSms')
+            } catch (e) {
+              showErr(e.message)
+              sendSms.disabled = false
+            }
+          }
+          const smsGo = $('smsGo')
+          if (smsGo) smsGo.onclick = async () => {
+            smsGo.disabled = true
+            try {
+              const data = await api('/v1/auth/sms/login', { method: 'POST', body: { phone: $('phone').value, code: $('smsCode').value } })
+              await finishAuth(data.token)
+            } catch (e) { showErr(e.message) }
+            finally { smsGo.disabled = false }
+          }
+          return
+        }
+        if (r === 'forgot') {
+          app.innerHTML = `<div class="wrap"><div class="card auth">
+            <h2 class="page-title">找回密码</h2>
+            <p class="muted">验证码会发到注册时的 QQ 邮箱。</p>
+            ${qqEmailField('email', 'email')}
+            <div class="field">
+              <label for="code">邮箱验证码</label>
+              <div class="code-row">
+                <input id="code" inputmode="numeric" maxlength="6">
+                <button class="btn ghost" type="button" id="send">获取验证码</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="password">新密码</label>
+              <input id="password" type="password" autocomplete="new-password" placeholder="至少 6 位">
+            </div>
+            <div class="field">
+              <label for="password2">确认新密码</label>
+              <input id="password2" type="password" autocomplete="new-password">
+            </div>
+            <div class="actions"><button class="btn" id="reset">重置密码</button></div>
+            <p class="auth-extra muted"><a href="#/login">返回登录</a></p>
+            <p class="hint" id="msg" role="status"></p>
+            <p class="err" id="err" role="alert"></p>
+          </div></div>`
+          bindQqEmail('email')
+          $('send').onclick = async () => {
+            $('err').textContent = ''
+            try {
+              const data = await api('/v1/auth/forgot', { method: 'POST', body: { email: qqEmailValue('email') } })
+              $('msg').textContent = data.message || '如果该邮箱已注册，验证码将在几分钟内送达'
+            } catch (e) { $('err').textContent = e.message }
+          }
+          $('reset').onclick = async () => {
+            $('err').textContent = ''
+            try {
+              if ($('password').value !== $('password2').value) throw new Error('两次输入的密码不一致')
+              await api('/v1/auth/reset', { method: 'POST', body: { email: qqEmailValue('email'), code: $('code').value, password: $('password').value } })
+              $('msg').textContent = '密码已重置，请登录'
+              setTimeout(() => go('login'), 800)
+            } catch (e) { $('err').textContent = e.message }
+          }
+          return
+        }
+        if (r === 'authorize') {
+          const deviceId = parseHash().parts[1] || sessionStorage.getItem('gt_desktop_device') || ''
+          if (!deviceId) {
+            app.innerHTML = `<div class="auth-screen"><div class="card auth"><h2 class="page-title">授权客户端</h2><p class="err">缺少授权请求，请回到桌面客户端重新点击登录。</p></div></div>`
+            return
+          }
+          sessionStorage.setItem('gt_desktop_device', deviceId)
+          if (!state.token) return go('login')
+          const u = state.me?.user
+          app.innerHTML = `<div class="auth-screen"><div class="card auth">
+            <h2 class="page-title">授权桌面客户端</h2>
+            <p class="muted">将以 <b>${u?.name || u?.email || '当前账号'}</b> 登录客户端。授权后请回到应用。</p>
+            <div class="actions"><button class="btn" id="approve">授权并打开客户端</button></div>
+            <p class="auth-extra muted"><button class="btn ghost sm" type="button" id="switchAcc">换一个账号</button></p>
+            <p class="hint" id="msg" role="status"></p>
+            <p class="err" id="err" role="alert"></p>
+          </div></div>`
+          $('approve').onclick = async () => {
+            $('approve').disabled = true
+            $('err').textContent = ''
+            try {
+              await api('/v1/auth/desktop/approve', { method: 'POST', body: { deviceId } })
+              sessionStorage.removeItem('gt_desktop_device')
+              $('msg').textContent = '已授权。正在尝试返回客户端…'
+              location.href = 'gtwork://auth/done'
+            } catch (e) {
+              $('err').textContent = e.message
+              $('approve').disabled = false
+            }
+          }
+          $('switchAcc').onclick = () => {
+            state.token = ''
+            localStorage.removeItem('gt_token')
+            state.me = null
+            sessionStorage.setItem('gt_desktop_device', deviceId)
+            go('login')
+          }
+          return
+        }
+        if (r === 'packages' || r === 'home') {
+          const { list } = await api('/v1/packages')
+          if (r === 'home') {
+            app.innerHTML = homePage(list)
+            bindBuy(app)
+            bindRecharge(app)
+            bindScenes(app)
+            bindReveal(app)
+            const pending = sessionStorage.getItem('gt_anchor')
+            if (pending) {
+              sessionStorage.removeItem('gt_anchor')
+              requestAnimationFrame(() => scrollToAnchor(pending))
+            }
+            return
+          }
+          app.innerHTML = `<div class="wrap packages-page">
+            <h1 class="page-title">套餐</h1>
+            <p class="page-sub">买的是工作台使用权。下面按客户端里实际开通的能力列出，额度只显示使用百分比。</p>
+            ${plansHtml(list)}
+          </div>`
+          bindBuy(app)
+          bindRecharge(app)
+          if (sessionStorage.getItem('gt_anchor') === 'recharge') {
+            sessionStorage.removeItem('gt_anchor')
+            requestAnimationFrame(() => document.getElementById('recharge')?.scrollIntoView({ block: 'start' }))
+          }
+          return
+        }
+        if (location.hash.startsWith('#/pay/')) {
+          const id = location.hash.split('/')[2]
+          app.innerHTML = `<div class="wrap"><div class="card auth">
+            <h2 class="page-title">确认支付</h2>
+            <p class="muted">开发环境使用模拟到账。</p>
+            <div class="cta-row" style="justify-content:flex-start;margin-top:20px">
+              <button class="btn" id="ali">支付宝（模拟）</button>
+              <button class="btn ghost" id="wx">微信（模拟）</button>
+            </div>
+            <p class="hint" id="msg" role="status"></p>
+          </div></div>`
+          const pay = async (method) => {
+            try {
+              await api('/v1/orders/' + id + '/pay', { method: 'POST', body: { method } })
+              $('msg').textContent = '支付成功，套餐已生效。'
+              await loadMe(); nav()
+            } catch (e) { $('msg').textContent = e.message }
+          }
+          $('ali').onclick = () => pay('alipay')
+          $('wx').onclick = () => pay('wechat')
+          return
+        }
+        if (r === 'account') {
+          if (!state.token) return go('login')
+          const s = state.me.subscription
+          const u = state.me.user
+          app.innerHTML = `<div class="wrap">
+            <h1 class="page-title">账户</h1>
+            <p class="page-sub">套餐、用量和登录密码。</p>
+            <div class="card">
+              <h3>登录信息</h3>
+              <div class="profile">
+                <span class="avatar">${glyph(u.name || u.email)}</span>
+                <div>
+                  <div><b>${u.name || '用户'}</b></div>
+                  <div class="muted">${u.phone || u.email}</div>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <h3>套餐与用量</h3>
+              ${s ? `<p>当前套餐 <b>${s.packageName}</b></p>
+              <p class="muted">已使用 ${Number(s.usagePercent || 0)}%</p>
+              <div class="usage"><i style="width:${Math.max(0, Math.min(100, Number(s.usagePercent || 0)))}%"></i></div>
+              <p class="muted">到期 ${new Date(s.expiresAt).toLocaleString()}</p>` : '<p class="err">暂无有效套餐</p>'}
+              <div class="chips">${(state.me.models || []).length
+                ? state.me.models.map((m) => `<span class="chip">${m.name}${m.kind === 'image' ? ' · 生图' : m.kind === 'video' ? ' · 生视频' : m.vision ? ' · 识图' : ''}</span>`).join('')
+                : '<span class="muted">暂无可用模型</span>'}</div>
+              <div class="cta-row" style="justify-content:flex-start;margin-top:16px">
+                <a class="btn" href="#/packages">升级套餐</a>
+                <a class="btn ghost" href="#/packages" id="goRecharge">自定义充值</a>
+              </div>
+            </div>
+            <div class="card">
+              <h3>${u.passwordSet ? '修改登录密码' : '设置登录密码'}</h3>
+              ${u.passwordSet ? '<div class="field"><label for="opw">当前密码</label><input id="opw" type="password" autocomplete="current-password"></div>' : ''}
+              <div class="field"><label for="npw">新密码</label><input id="npw" type="password" autocomplete="new-password" placeholder="至少 6 位"></div>
+              <div class="field"><label for="npw2">确认新密码</label><input id="npw2" type="password" autocomplete="new-password"></div>
+              <div class="field">
+                <label for="pwcode">邮箱验证码</label>
+                <div class="code-row">
+                  <input id="pwcode" inputmode="numeric" maxlength="6">
+                  <button class="btn ghost" type="button" id="sendPw">发送验证码</button>
+                </div>
+              </div>
+              <div class="actions" style="max-width:200px"><button class="btn" id="savePw">保存密码</button></div>
+              <p class="hint" id="pwm" role="status"></p>
+              <p class="err" id="pwe" role="alert"></p>
+            </div>
+            <div class="card">
+              <h3>申请发票</h3>
+              <div class="field"><label for="title">抬头</label><input id="title"></div>
+              <div class="field"><label for="tax">税号</label><input id="tax"></div>
+              <div class="field"><label for="amt">金额（元）</label><input id="amt" type="number" min="0" step="0.01"></div>
+              <div class="actions" style="max-width:200px"><button class="btn" id="inv">提交</button></div>
+              <p class="hint" id="im" role="status"></p>
+            </div>
+          </div>`
+          $('goRecharge').onclick = (ev) => {
+            ev.preventDefault()
+            sessionStorage.setItem('gt_anchor', 'recharge')
+            go('packages')
+          }
+          $('inv').onclick = async () => {
+            try {
+              await api('/v1/invoices', { method: 'POST', body: { title: $('title').value, taxNo: $('tax').value, amountFen: Math.round(Number($('amt').value || 0) * 100) } })
+              $('im').textContent = '已提交，开具后可在订单页查看状态。'
+            } catch (e) { $('im').textContent = e.message }
+          }
+          $('sendPw').onclick = async () => {
+            $('pwe').textContent = ''
+            try {
+              const data = await api('/v1/me/password/code', { method: 'POST', body: {} })
+              $('pwm').textContent = data.message
+            } catch (e) { $('pwe').textContent = e.message }
+          }
+          $('savePw').onclick = async () => {
+            $('pwe').textContent = ''
+            $('pwm').textContent = ''
+            try {
+              if ($('npw').value !== $('npw2').value) throw new Error('两次输入的密码不一致')
+              await api('/v1/me/password', {
+                method: 'POST',
+                body: {
+                  newPassword: $('npw').value,
+                  currentPassword: $('opw')?.value || '',
+                  code: $('pwcode').value,
+                },
+              })
+              $('pwm').textContent = '密码已保存，以后可用邮箱密码登录。'
+              await loadMe()
+            } catch (e) { $('pwe').textContent = e.message }
+          }
+          return
+        }
+        if (r === 'orders') {
+          if (!state.token) return go('login')
+          const { list } = await api('/v1/orders')
+          const usage = await api('/v1/usage')
+          const inv = await api('/v1/invoices')
+          app.innerHTML = `<div class="wrap">
+            <h1 class="page-title">订单与用量</h1>
+            <p class="page-sub">查看购买记录、最近调用和发票状态。</p>
+            <div class="card"><h3>订单</h3><div class="table-wrap"><table><tr><th>套餐</th><th>金额</th><th>状态</th></tr>
+            ${list.map((o) => `<tr><td>${o.package_name}</td><td>${money(o.amount_fen)}</td><td>${o.status}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">暂无订单</td></tr>'}</table></div></div>
+            <div class="card"><h3>最近用量</h3><div class="table-wrap"><table><tr><th>时间</th><th>模型</th></tr>
+            ${(usage.list || []).map((u) => `<tr><td>${new Date(u.created_at).toLocaleString()}</td><td>${u.model}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">暂无用量</td></tr>'}</table></div></div>
+            <div class="card"><h3>发票</h3><div class="table-wrap"><table><tr><th>抬头</th><th>金额</th><th>状态</th></tr>
+            ${(inv.list || []).map((i) => `<tr><td>${i.title}</td><td>${money(i.amount_fen)}</td><td>${i.status}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">暂无发票</td></tr>'}</table></div></div>
+          </div>`
+          return
+        }
+        go('home')
+      } catch (e) {
+        app.innerHTML = `<div class="wrap"><p class="err" role="alert">${e.message}</p></div>`
+      }
+    }
+
+    document.getElementById('siteNav')?.addEventListener('click', (ev) => {
+      const link = ev.target.closest('[data-anchor]')
+      if (!link) return
+      ev.preventDefault()
+      document.body.classList.remove('nav-open')
+      document.getElementById('navToggle')?.setAttribute('aria-expanded', 'false')
+      const id = link.dataset.anchor || 'top'
+      if (route() !== 'home') {
+        sessionStorage.setItem('gt_anchor', id)
+        go('home')
+        return
+      }
+      scrollToAnchor(id)
+    })
+    document.getElementById('navToggle')?.addEventListener('click', () => {
+      const open = document.body.classList.toggle('nav-open')
+      document.getElementById('navToggle')?.setAttribute('aria-expanded', String(open))
+    })
+
+    window.addEventListener('hashchange', render)
+    render()
+  </script>
+</body>
+</html>

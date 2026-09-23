@@ -1,0 +1,52 @@
+{
+  "name": "@gt-workbench/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "光途Work 桌面客户端",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build && electron-builder --win",
+    "preview": "electron-vite preview"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.2",
+    "exceljs": "^4.4.0",
+    "gray-matter": "^4.0.3",
+    "lucide-react": "^0.544.0",
+    "pptxgenjs": "^4.0.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.13",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "electron": "^37.3.1",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^4.0.0",
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  },
+  "build": {
+    "appId": "com.guangtu.workbench",
+    "productName": "光途Work",
+    "directories": { "output": "release", "buildResources": "resources" },
+    "files": ["out/**/*"],
+    "icon": "resources/icon.png",
+    "extraResources": [
+      { "from": "../../packages/skills", "to": "packages/skills" },
+      { "from": "../../packages/experts", "to": "packages/experts" },
+      { "from": "resources/icon.png", "to": "icon.png" }
+    ],
+    "win": { "target": ["nsis"] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
+    "protocols": [{ "name": "光途Work", "schemes": ["gtwork"] }],
+    "publish": [{ "provider": "generic", "url": "http://127.0.0.1:8787/updates" }]
+  }
+}

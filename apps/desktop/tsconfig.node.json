@@ -1,0 +1,17 @@
+{
+  "files": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*"],
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "target": "ES2022",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+      "@gt-workbench/agent-core": ["../../packages/agent-core/src/index.ts"],
+      "@gt-workbench/mcp-host": ["../../packages/mcp-host/src/index.ts"]
+    }
+  }
+}

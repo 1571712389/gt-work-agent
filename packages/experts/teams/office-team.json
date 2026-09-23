@@ -1,0 +1,7 @@
+{
+  "id": "office-team",
+  "name": "办公专家团",
+  "description": "整理、写作、表格并行，适合周报汇报和材料打包。",
+  "leaderId": "organizer",
+  "memberIds": ["organizer", "writer", "analyst"]
+}

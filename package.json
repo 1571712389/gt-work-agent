@@ -1,0 +1,20 @@
+{
+  "name": "gt-workbench",
+  "private": true,
+  "version": "0.1.0",
+  "description": "光途Work：本地 AI Agent 桌面客户端",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @gt-workbench/desktop",
+    "api": "npm run dev -w @gt-workbench/api",
+    "build": "npm run build -w @gt-workbench/desktop",
+    "test": "npm run test -w @gt-workbench/agent-core",
+    "verify": "npm run verify -w @gt-workbench/agent-core"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

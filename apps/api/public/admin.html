@@ -1,0 +1,1024 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>内部控制台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/ops.css" />
+  <script src="/vendor/chart.umd.min.js" defer></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const TOKEN_KEY = 'gt_ops_token'
+    const $ = (id) => document.getElementById(id)
+    const state = {
+      token: localStorage.getItem(TOKEN_KEY) || '',
+      me: null,
+      tab: location.hash.slice(2) || 'overview',
+      pricingPane: 'plans',
+      pricingVendor: '',
+      pricingModelId: '',
+      pricingData: null,
+      profitMode: 'margin_pct',
+      profitValue: 50,
+      charts: [],
+    }
+    const TABS = [
+      ['overview', '总览'],
+      ['monitor', '监测'],
+      ['users', '用户'],
+      ['packages', '套餐'],
+      ['pricing', '差价'],
+      ['providers', '供应商'],
+      ['orders', '订单'],
+      ['invoices', '发票'],
+      ['coupons', '优惠码'],
+      ['usage', '用量'],
+    ]
+    const ICONS = {
+      overview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V9l6-5 6 5v10"/><path d="M10 19v-6h4v6"/></svg>',
+      monitor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16"/><path d="M8 15l3-4 3 2 5-7"/><circle cx="19" cy="6" r="1.6"/></svg>',
+      users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3"/><path d="M3 19c0-3 2.5-5 6-5s6 2 6 5"/><circle cx="17" cy="9" r="2.5"/><path d="M21 19c0-2.2-1.6-3.8-4-4.4"/></svg>',
+      packages: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 4 7v10l8 4 8-4V7L12 3Z"/><path d="M12 12 4 7M12 12v11M12 12l8-5"/></svg>',
+      pricing: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18"/><path d="M8 8h5.5a2.5 2.5 0 0 1 0 5H9a2.5 2.5 0 0 0 0 5h7"/></svg>',
+      providers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 12h8M7 8h10v8H7z"/><path d="M7 10H4M7 14H4M20 10h-3M20 14h-3"/></svg>',
+      orders: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 4h10l1 4H6L7 4Z"/><path d="M6 8h12v12H6z"/><path d="M9 12h6"/></svg>',
+      invoices: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4M9 13h6M9 17h4"/></svg>',
+      coupons: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 9a3 3 0 0 0 0 6l3-3-3-3Zm16 0a3 3 0 0 1 0 6l-3-3 3-3Z"/><path d="M7 9h10v6H7z"/></svg>',
+      usage: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16"/><path d="M8 15l4-5 3 3 5-7"/></svg>',
+    }
+
+    function money(fen) { return '¥' + ((fen || 0) / 100).toFixed(2) }
+    function yuanPerM(fen) { return '¥' + ((fen || 0) / 100).toFixed(2) + '/百万' }
+    function pct(v) { return v == null ? '—' : v + '%' }
+    function fmtCount(n) {
+      const x = Number(n) || 0
+      const abs = Math.abs(x)
+      if (abs >= 1e8) return (x / 1e8).toFixed(2).replace(/\.?0+$/, '') + ' 亿'
+      if (abs >= 1e4) return (x / 1e4).toFixed(x % 10000 === 0 ? 0 : 1) + ' 万'
+      return Math.round(x).toLocaleString()
+    }
+    function shares(n) {
+      const x = Number(n) || 0
+      if (Math.abs(x) >= 10000) return fmtCount(x) + '份额'
+      return Math.round(x).toLocaleString() + ' 份额'
+    }
+    function tokens(n) {
+      const x = Number(n) || 0
+      if (Math.abs(x) >= 10000) return fmtCount(x) + ' Token'
+      return Math.round(x).toLocaleString() + ' Token'
+    }
+    function clock(ts) {
+      if (!ts) return '尚未查询'
+      const d = new Date(ts)
+      if (Number.isNaN(d.getTime())) return '尚未查询'
+      const p = (n) => String(n).padStart(2, '0')
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+    }
+    function remainText(n, unit) {
+      if (n == null) return '—'
+      return unit === 'share' ? shares(n) : tokens(n)
+    }
+    function yuan(n) {
+      if (n == null || Number.isNaN(Number(n))) return '—'
+      return '¥' + Number(n).toFixed(2)
+    }
+    const CHART_COLORS = ['#1e3a8a', '#0f766e', '#b45309', '#6d28d9', '#be123c', '#0369a1', '#365314', '#9a3412']
+    function chartMotion() {
+      return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? false : { duration: 280 }
+    }
+    function destroyCharts() {
+      (state.charts || []).forEach((c) => { try { c.destroy() } catch {} })
+      state.charts = []
+    }
+    function waitChart() {
+      if (window.Chart) return Promise.resolve()
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-chartjs]')
+        if (!existing) {
+          const s = document.createElement('script')
+          s.src = '/vendor/chart.umd.min.js'
+          s.async = true
+          s.dataset.chartjs = '1'
+          s.onerror = () => reject(new Error('图表库加载失败'))
+          document.head.appendChild(s)
+        }
+        let n = 0
+        const t = setInterval(() => {
+          n += 1
+          if (window.Chart) { clearInterval(t); resolve() }
+          else if (n > 80) { clearInterval(t); reject(new Error('图表库加载失败')) }
+        }, 50)
+      })
+    }
+    function paintChart(canvas, emptyId, isEmpty, config) {
+      const empty = $(emptyId)
+      if (empty) {
+        empty.classList.toggle('is-on', Boolean(isEmpty))
+        empty.hidden = !isEmpty
+      }
+      if (isEmpty || !window.Chart || !canvas) return null
+      const chart = new window.Chart(canvas.getContext('2d'), config)
+      state.charts.push(chart)
+      return chart
+    }
+    function shortDay(d) {
+      return String(d || '').slice(5)
+    }
+    function niceQuota(n) {
+      const x = Math.max(1000, Math.round(n))
+      if (x >= 1000000) return Math.round(x / 100000) * 100000
+      if (x >= 100000) return Math.round(x / 10000) * 10000
+      return Math.round(x / 1000) * 1000
+    }
+    function quotaFromProfit(priceFen, mixFenPerM, mode, value) {
+      if (!priceFen || !mixFenPerM) return 0
+      const costFen = mode === 'markup_x'
+        ? Math.round(priceFen / Math.max(1.05, Number(value) || 1.05))
+        : Math.round(priceFen * (1 - Math.min(90, Math.max(0, Number(value) || 0)) / 100))
+      return niceQuota((Math.max(1, costFen) / mixFenPerM) * 1e6)
+    }
+    function glyph(name) { return (name || '工').slice(0, 1).toUpperCase() }
+    function parseJson(s, d) { try { return JSON.parse(s) } catch { return d } }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        ...opts,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}),
+          ...(opts.headers || {}),
+        },
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error?.message || res.statusText)
+      return data
+    }
+
+    function clearSession() {
+      state.token = ''
+      state.me = null
+      localStorage.removeItem(TOKEN_KEY)
+    }
+
+    function sessionChip() {
+      const u = state.me?.user
+      if (!u) return '<span class="badge muted">未登录</span>'
+      return `<div class="session" title="工作人员会话">
+        <span class="avatar">${glyph(u.name || u.email)}</span>
+        <div class="meta"><div class="name">${u.name || '工作人员'}</div><div class="mail">${u.email}</div></div>
+        <span class="badge">已登录 · 工作人员</span>
+      </div>
+      <button class="btn sm ghost" id="logoutBtn">退出</button>`
+    }
+
+    function bindLogout() {
+      const el = $('logoutBtn')
+      if (el) el.onclick = () => { clearSession(); loginView() }
+    }
+
+    function vendorGroups(models) {
+      const grouped = []
+      const index = {}
+      for (const m of models || []) {
+        const key = m.providerName || m.provider_id
+        if (!index[key]) {
+          index[key] = { name: key, models: [] }
+          grouped.push(index[key])
+        }
+        index[key].models.push(m)
+      }
+      return grouped
+    }
+
+    function fillShareConvert(root, m, quota, pkgName) {
+      const box = root.querySelector('[data-convert]')
+      if (!box) return
+      const mult = Math.max(0.1, Number(root.querySelector('[data-f="multiplier"]')?.value) || Number(m.multiplier) || 1)
+      box.innerHTML = `<div><span>1 个上游 Token</span><b>扣 ${mult} 份额</b></div>
+        <div><span>用户打 1 万 Token</span><b>消耗 ${shares(10000 * mult)}</b></div>
+        <div><span>${pkgName} ${shares(quota)}</span><b>约合 ${fmtCount(quota / mult)} Token</b></div>`
+    }
+
+    function drawPricing() {
+      const main = $('opsMain')
+      const p = state.pricingData
+      if (!p) return
+      const r = p.realized || {}
+      const groups = vendorGroups(p.models)
+      if (!state.pricingVendor || !groups.some((g) => g.name === state.pricingVendor)) {
+        state.pricingVendor = groups[0]?.name || ''
+      }
+      const vendor = groups.find((g) => g.name === state.pricingVendor) || groups[0]
+      if (vendor && !vendor.models.some((m) => m.id === state.pricingModelId)) {
+        state.pricingModelId = vendor.models[0]?.id || ''
+      }
+      const model = (vendor?.models || []).find((m) => m.id === state.pricingModelId) || vendor?.models?.[0]
+      const sample = (p.packages || []).find((x) => x.slug === 'pro') || (p.packages || []).find((x) => x.priceFen > 0)
+      const quota = sample?.tokenQuota || 5_000_000
+      const pkgName = sample?.name || '专业版'
+      const pane = state.pricingPane || 'models'
+      const paneBtn = (id, label) => `<button type="button" data-pane="${id}" class="${pane === id ? 'on' : ''}">${label}</button>`
+
+      let body = ''
+      if (pane === 'plans') {
+        const mix = (p.baseOfficial && p.baseOfficial.mixFenPerM) || 190
+        body = `<div class="card">
+            <h3>利润目标</h3>
+            <p class="muted">当前大约 ${pct((p.packages || []).find((x) => x.priceFen > 0)?.typicalMarginPct)} 毛利，偏高。调低利润会增加套餐份额，用户能用的 Token 变多。体验版（¥0）不改。</p>
+            <div class="profit-bar">
+              <div>
+                <label>怎么定利润</label>
+                <select id="profit-mode">
+                  <option value="margin_pct" ${state.profitMode === 'margin_pct' ? 'selected' : ''}>目标毛利率 %</option>
+                  <option value="markup_x" ${state.profitMode === 'markup_x' ? 'selected' : ''}>卖价是进货的几倍</option>
+                </select>
+              </div>
+              <div>
+                <label>${state.profitMode === 'markup_x' ? '进货倍数' : '毛利率 %'}</label>
+                <input id="profit-range" type="range" min="${state.profitMode === 'markup_x' ? '1.5' : '10'}" max="${state.profitMode === 'markup_x' ? '15' : '80'}" step="${state.profitMode === 'markup_x' ? '0.1' : '1'}" value="${state.profitValue}">
+              </div>
+              <div>
+                <label>数值</label>
+                <input id="profit-value" type="number" step="${state.profitMode === 'markup_x' ? '0.1' : '1'}" value="${state.profitValue}">
+              </div>
+              <div><button class="btn" id="profit-apply">按此利润写入份额</button></div>
+            </div>
+            <p class="price-hint">下面表格已按目标即时预览。点写入后才会改套餐配额。已开通用户的剩余份额不变。</p>
+          </div>
+          <div class="kpis">
+            <div class="kpi"><span class="muted">已付收入</span><b>${money(r.revenueFen)}</b></div>
+            <div class="kpi"><span class="muted">实际进货</span><b>${money(r.costFen)}</b></div>
+            <div class="kpi"><span class="muted">已实现毛利</span><b>${money(r.marginFen)}</b><em>${pct(r.marginPct)}</em></div>
+            <div class="kpi"><span class="muted">已消耗份额</span><b>${shares(r.billedTokens)}</b></div>
+          </div>
+          ${(p.packages || []).map((row) => {
+            const previewQ = row.priceFen > 0 ? quotaFromProfit(row.priceFen, mix, state.profitMode, state.profitValue) : row.tokenQuota
+            const changed = row.priceFen > 0 && previewQ !== row.tokenQuota
+            return `<div class="card">
+            <h3>${row.name} · 卖 ${money(row.priceFen)} · ${changed ? '预览 ' + shares(previewQ) + ' <span class="muted">（当前 ' + shares(row.tokenQuota) + '）</span>' : '含 ' + shares(row.tokenQuota)}
+              <span class="badge ${row.status === 'low' || row.status === 'risk' ? 'warn' : row.status === 'gift' ? 'muted' : ''}">${row.statusLabel}</span>
+            </h3>
+            <div class="table-wrap"><table>
+              <tr>
+                <th>模型</th>
+                <th>1 Token =</th>
+                <th>用户可消耗（官网等值 Token）</th>
+                <th>官网进货成本</th>
+                <th>卖给用户</th>
+                <th>利润</th>
+                <th>毛利率</th>
+              </tr>
+              ${(row.byModel || []).map((m) => {
+                const userTokens = Math.round(previewQ / Math.max(0.1, m.sharesPerToken || 1))
+                const costFen = Math.round((userTokens * (m.mixFenPerM || 0)) / 1e6)
+                const profitFen = row.priceFen - costFen
+                const marginPct = row.priceFen > 0 ? Math.round((profitFen / row.priceFen) * 1000) / 10 : null
+                return `<tr>
+                <td><b>${m.displayName}</b><div class="muted">${m.modelId}</div></td>
+                <td>${m.sharesPerToken} 份额</td>
+                <td>${tokens(userTokens)}</td>
+                <td>${money(costFen)}</td>
+                <td>${money(row.priceFen)}</td>
+                <td><b class="${profitFen < 0 ? 'err' : ''}">${money(profitFen)}</b></td>
+                <td>${marginPct == null ? '赠送' : pct(marginPct)}</td>
+              </tr>`
+              }).join('')}
+            </table></div>
+            <p class="price-hint">用户可消耗 Token = 套餐份额 ÷（1 Token 扣多少份额）。成本是去该模型官网买这些 Token 的钱。利润 = 卖出价 − 成本。</p>
+          </div>`
+          }).join('')}`
+      } else if (pane === 'new') {
+        body = `<div class="card"><h3>接入新模型</h3>
+          <p class="muted">进货价填官方「分 / 百万 Token」。不填「1 Token 扣多少份额」时，会按相对 DeepSeek 自动算。</p>
+          <div class="form-grid">
+            <div><label>模型 ID</label><input id="nm-id" placeholder="doubao-xxx"></div>
+            <div><label>显示名</label><input id="nm-name" placeholder="豆包某某"></div>
+            <div><label>供应商</label><select id="nm-prov">${[...new Set((p.models || []).map((m) => m.provider_id))].map((id) => `<option value="${id}">${id}</option>`).join('')}</select></div>
+            <div><label>上游模型名</label><input id="nm-up" placeholder="方舟/Kimi 控制台中的 model"></div>
+            <div><label>输入未命中（分/百万）</label><input id="nm-in" type="number" value="100"></div>
+            <div><label>输出（分/百万）</label><input id="nm-out" type="number" value="400"></div>
+          </div>
+          <p></p><button class="btn" id="nm-add">添加并自动算份额</button>
+        </div>`
+      } else {
+        const form = model ? `<div class="model-price" data-model="${model.id}">
+          <h3>${model.display_name || model.id}
+            <span class="badge ${model.tier === 'flagship' ? 'warn' : model.tier === 'base' ? '' : 'muted'}">${model.tierLabel || ''}</span>
+            ${model.drifted ? '<span class="badge warn">份额未对齐进货</span>' : ''}
+          </h3>
+          <p class="muted">${model.id} · 建议 1 Token = ${model.suggestedMultiplier} 份额</p>
+          <p class="price-hint">${model.priceNote || ''}</p>
+          <div class="convert" data-convert></div>
+          <label>上游模型名 / 接入点</label>
+          <input data-f="upstream_model" value="${model.upstream_model || ''}" placeholder="例如 doubao-seedance-1.5-pro-251215 或 ep- 开头">
+          <p class="muted">调用方舟时用这一项。Seedance 1.5 Pro 填 <code>doubao-seedance-1.5-pro-251215</code>，一般没有 ep- 接入点。</p>
+          <div class="form-grid">
+            <div><label>显示名</label><input data-f="display_name" value="${model.display_name || ''}"></div>
+            <div><label>1 个 Token 扣多少份额</label><input data-f="multiplier" type="number" step="0.1" value="${model.multiplier || 1}"></div>
+            <div><label>进货：输入未命中（分/百万）</label><input data-f="input_fen_per_m" type="number" value="${model.input_fen_per_m || 0}"></div>
+            <div><label>进货：输出（分/百万）</label><input data-f="output_fen_per_m" type="number" value="${model.output_fen_per_m || 0}"></div>
+            <div><label>进货：缓存命中（分/百万）</label><input data-f="cache_hit_fen_per_m" type="number" value="${model.cache_hit_fen_per_m || 0}"></div>
+            <div><label>启用</label><div class="checks"><label><input data-f="enabled" type="checkbox" ${model.enabled ? 'checked' : ''}> 对用户开放</label></div></div>
+          </div>
+          <p></p>
+          <button class="btn" data-save-m="${model.id}">保存这个模型</button>
+        </div>` : '<p class="muted">还没有模型。</p>'
+        body = `<div class="card">
+          <div class="seg sub">${groups.map((g) => `<button type="button" data-vendor="${g.name}" class="${g.name === state.pricingVendor ? 'on' : ''}">${g.name}</button>`).join('')}</div>
+          <div class="seg sub">${(vendor?.models || []).map((m) => `<button type="button" data-model-tab="${m.id}" class="${m.id === state.pricingModelId ? 'on' : ''}">${m.display_name || m.id}</button>`).join('')}</div>
+          ${form}
+        </div>`
+      }
+
+      main.innerHTML = `<div class="toolbar"><div><h1>差价与份额</h1><p class="muted">份额是内部点数。DeepSeek 为 1 Token = 1 份额。</p></div>
+        <div>
+          <button class="btn light" id="sync-catalog">写入官方进货价</button>
+          <button class="btn" id="sync-mult">按进货价同步份额</button>
+        </div></div>
+        <div class="seg">${paneBtn('plans', '套餐与份额')}${paneBtn('models', '模型配置')}${paneBtn('new', '接入新模型')}</div>
+        ${body}`
+
+      if (pane === 'models' && model) fillShareConvert(main, model, quota, pkgName)
+      main.querySelectorAll('[data-pane]').forEach((el) => {
+        el.onclick = () => { state.pricingPane = el.dataset.pane; drawPricing() }
+      })
+      main.querySelectorAll('[data-vendor]').forEach((el) => {
+        el.onclick = () => { state.pricingVendor = el.dataset.vendor; state.pricingModelId = ''; drawPricing() }
+      })
+      main.querySelectorAll('[data-model-tab]').forEach((el) => {
+        el.onclick = () => { state.pricingModelId = el.dataset.modelTab; drawPricing() }
+      })
+      const multInput = main.querySelector('[data-f="multiplier"]')
+      if (multInput && model) {
+        multInput.oninput = () => fillShareConvert(main, model, quota, pkgName)
+      }
+      const catalogBtn = $('sync-catalog')
+      if (catalogBtn) catalogBtn.onclick = async () => {
+        await api('/v1/admin/pricing/sync-catalog', { method: 'POST', body: {} })
+        state.pricingData = await api('/v1/admin/pricing')
+        drawPricing()
+      }
+      const syncBtn = $('sync-mult')
+      if (syncBtn) syncBtn.onclick = async () => {
+        await api('/v1/admin/pricing/sync-multipliers', { method: 'POST', body: {} })
+        state.pricingData = await api('/v1/admin/pricing')
+        drawPricing()
+      }
+      const profitMode = $('profit-mode')
+      const profitRange = $('profit-range')
+      const profitValue = $('profit-value')
+      if (profitMode) profitMode.onchange = () => {
+        state.profitMode = profitMode.value
+        if (state.profitMode === 'markup_x' && state.profitValue > 20) state.profitValue = 3
+        if (state.profitMode === 'margin_pct' && state.profitValue <= 15) state.profitValue = 50
+        drawPricing()
+      }
+      if (profitRange) {
+        profitRange.oninput = () => {
+          state.profitValue = Number(profitRange.value)
+          if (profitValue) profitValue.value = profitRange.value
+        }
+        profitRange.onchange = () => {
+          state.profitValue = Number(profitRange.value)
+          drawPricing()
+        }
+      }
+      if (profitValue) profitValue.onchange = () => {
+        state.profitValue = Number(profitValue.value)
+        drawPricing()
+      }
+      const profitApply = $('profit-apply')
+      if (profitApply) profitApply.onclick = async () => {
+        const data = await api('/v1/admin/pricing/profit-config', {
+          method: 'POST',
+          body: { mode: state.profitMode, value: state.profitValue, apply: true },
+        })
+        if (data.report) state.pricingData = data.report
+        else state.pricingData = await api('/v1/admin/pricing')
+        drawPricing()
+      }
+      const addBtn = $('nm-add')
+      if (addBtn) addBtn.onclick = async () => {
+        const created = await api('/v1/admin/models', {
+          method: 'POST',
+          body: {
+            id: $('nm-id').value.trim(),
+            display_name: $('nm-name').value.trim(),
+            provider_id: $('nm-prov').value,
+            upstream_model: $('nm-up').value.trim(),
+            input_fen_per_m: Number($('nm-in').value),
+            output_fen_per_m: Number($('nm-out').value),
+          },
+        })
+        state.pricingData = await api('/v1/admin/pricing')
+        state.pricingPane = 'models'
+        state.pricingModelId = created.id
+        drawPricing()
+      }
+      main.querySelectorAll('[data-save-m]').forEach((el) => {
+        el.onclick = async () => {
+          const card = el.closest('[data-model]')
+          const val = (f) => card.querySelector(`[data-f="${f}"]`)
+          await api('/v1/admin/models/' + el.dataset.saveM, {
+            method: 'PUT',
+            body: {
+              display_name: val('display_name').value,
+              multiplier: Number(val('multiplier').value),
+              input_fen_per_m: Number(val('input_fen_per_m').value),
+              output_fen_per_m: Number(val('output_fen_per_m').value),
+              cache_hit_fen_per_m: Number(val('cache_hit_fen_per_m').value),
+              upstream_model: val('upstream_model')?.value?.trim() || undefined,
+              enabled: val('enabled').checked,
+            },
+          })
+          state.pricingData = await api('/v1/admin/pricing')
+          drawPricing()
+        }
+      })
+    }
+
+    function loginView(opts = {}) {
+      document.title = '工作人员登录 · 内部控制台'
+      $('root').innerHTML = `<div class="gate">
+        <aside class="gate-side">
+          <img src="/logo.jpg" alt="">
+          <div style="margin-top:16px"><span class="staff-tag">STAFF</span></div>
+          <h1>内部控制台</h1>
+          <p>仅供运营与运维人员使用。用户请通过官网注册、购买套餐，或在桌面客户端登录。</p>
+          <p>本控制台使用独立工作人员会话，与官网用户登录互不影响。</p>
+        </aside>
+        <div class="gate-form">
+          <div class="gate-card">
+            <h2>工作人员登录</h2>
+            <p class="muted">请使用管理员账号。没有注册入口。</p>
+            <label for="email">工作邮箱</label>
+            <input id="email" type="email" autocomplete="username">
+            <label for="password">密码</label>
+            <input id="password" type="password" autocomplete="current-password">
+            <p class="err" id="err" role="alert">${opts.error || ''}</p>
+            <p></p>
+            <button class="btn" id="loginBtn">进入控制台</button>
+            <p class="muted" style="margin-top:14px">初始账号 <code>admin@local</code>，上线后请立刻改密。</p>
+          </div>
+        </div>
+      </div>`
+      $('loginBtn').onclick = async () => {
+        const btn = $('loginBtn')
+        btn.disabled = true
+        $('err').textContent = ''
+        try {
+          const data = await api('/v1/auth/login', { method: 'POST', body: { email: $('email').value, password: $('password').value } })
+          if (data.user?.role !== 'admin') {
+            clearSession()
+            $('err').textContent = '此账号不是工作人员账号。用户请到官网登录。'
+            return
+          }
+          state.token = data.token
+          localStorage.setItem(TOKEN_KEY, data.token)
+          state.me = await api('/v1/me')
+          if (state.me.user?.role !== 'admin') {
+            clearSession()
+            $('err').textContent = '此账号不是工作人员账号。'
+            return
+          }
+          renderShell()
+        } catch (e) {
+          $('err').textContent = e.message
+        } finally {
+          btn.disabled = false
+        }
+      }
+    }
+
+    async function shellContent() {
+      const tab = state.tab
+      const main = $('opsMain')
+      destroyCharts()
+      main.innerHTML = '<p class="muted">加载中…</p>'
+      try {
+        if (tab === 'overview') {
+          const o = await api('/v1/admin/overview')
+          main.innerHTML = `<div class="toolbar"><div><h1>运营总览</h1><p class="muted">收入来自已支付套餐；成本按各模型官方进货价计算。配置与满额测算见「差价」。</p></div></div>
+            <div class="kpis">
+              <div class="kpi"><span class="muted">用户数</span><b>${o.users}</b></div>
+              <div class="kpi"><span class="muted">已付收入</span><b>${money(o.revenueFen)}</b></div>
+              <div class="kpi"><span class="muted">已消耗份额</span><b>${shares(o.billedTokens)}</b></div>
+              <div class="kpi"><span class="muted">进货成本</span><b>${money(o.costFen)}</b></div>
+              <div class="kpi"><span class="muted">已实现毛利</span><b>${money(o.marginFen)}</b><em>${pct(o.marginPct)}</em></div>
+            </div>`
+          return
+        }
+        if (tab === 'monitor') {
+          main.innerHTML = `<div class="toolbar"><div><h1>上游监测</h1><p class="muted">正在向厂商拉取最新余额…</p></div></div><div class="chart-skel"></div>`
+          const data = await api('/v1/admin/vendor-monitor?refresh=1')
+          const renderMonitor = async (pack) => {
+            destroyCharts()
+            const list = pack.list || []
+            const models = list.flatMap((p) => (p.models || []).map((m) => ({ ...m, provider: p.name, topUpUrl: p.topUpUrl })))
+            const deepseek = list.find((p) => p.canQueryBalance) || list[0]
+            const bal = (deepseek && deepseek.balance) || {}
+            const todayTokens = list.reduce((s, p) => s + (p.todayTokens || 0), 0)
+            const todayCost = list.reduce((s, p) => s + (p.todayCostFen || 0), 0)
+            const vendorRemain = list.filter((p) => p.remainYuan != null)
+            const totalRemainYuan = vendorRemain.reduce((s, p) => s + Number(p.remainYuan || 0), 0)
+            const totalRemainShares = vendorRemain.reduce((s, p) => s + Number(p.remainShares || 0), 0)
+            const low = bal.available === false || (typeof bal.total === 'number' && bal.total <= 5)
+            const balLabel = bal.error
+              ? bal.error
+              : (bal.supported ? Number(bal.total || 0).toFixed(2) + ' ' + (bal.currency || 'CNY') : '无法查询')
+            const trend = pack.trend || { days: [], models: [] }
+            main.innerHTML = `<div class="toolbar"><div>
+                <h1>上游监测</h1>
+                <p class="muted">余量按厂商账户统计。柱状图是官网余额（人民币），并换算成约合份额。环形图是各厂余额占比。更新于 ${clock(bal.checkedAt || pack.checkedAt)}</p>
+              </div>
+              <div class="mon-actions">
+                ${deepseek && deepseek.topUpUrl ? `<a class="btn light" href="${deepseek.topUpUrl}" target="_blank" rel="noopener">去官网充值</a>` : ''}
+                <button class="btn" id="mon-refresh">刷新余额</button>
+              </div></div>
+              <div class="kpis">
+                <div class="kpi"><span class="muted">厂商余量合计</span><b>${vendorRemain.length ? yuan(totalRemainYuan) : '—'}</b><em>${vendorRemain.length ? '约 ' + shares(totalRemainShares) : '尚无可查询厂商'}</em></div>
+                <div class="kpi"><span class="muted">${deepseek ? deepseek.name + ' 余额' : '官网余额'}</span><b>${bal.supported && !bal.error ? yuan(bal.total) : '—'}</b><em>${low && bal.supported && !bal.error ? '余额偏低' : balLabel}</em></div>
+                <div class="kpi"><span class="muted">今日用量</span><b>${tokens(todayTokens)}</b><em>进货 ${money(todayCost)}</em></div>
+                <div class="kpi"><span class="muted">已查询厂商</span><b>${vendorRemain.length}</b><em>共 ${list.length} 家供应商</em></div>
+              </div>
+              <div class="chart-grid">
+                <div class="chart-card wide">
+                  <h3>近 14 日模型用量</h3>
+                  <p class="muted hint">单位：上游 Token。没有对话时曲线为平线。</p>
+                  <div class="chart-box"><canvas id="chart-trend"></canvas><div class="chart-empty" id="empty-trend" hidden>还没有用量。客户端发几条对话后，这里会画出趋势。</div></div>
+                </div>
+                <div class="chart-card">
+                  <h3>各厂商余量</h3>
+                  <p class="muted hint">单位：人民币。悬停可看约合份额。</p>
+                  <div class="chart-box"><canvas id="chart-remain"></canvas><div class="chart-empty" id="empty-remain" hidden>还不能查询厂商余量。请在「供应商」配置可查余额的 Key 并刷新。</div></div>
+                </div>
+                <div class="chart-card">
+                  <h3>厂商余量占比</h3>
+                  <p class="muted hint">按等价人民币拆分各厂商账户余额。</p>
+                  <div class="chart-box"><canvas id="chart-balance"></canvas><div class="chart-empty" id="empty-balance" hidden>还没有可展示的厂商余额。</div></div>
+                </div>
+              </div>
+              <div class="card">
+                <h3>厂商余量明细</h3>
+                <div class="table-wrap"><table>
+                  <tr><th>厂商</th><th>官网余额</th><th>等价人民币</th><th>约合份额</th><th>今日进货</th><th>累计进货</th></tr>
+                  ${list.map((p) => {
+                    const b = p.balance || {}
+                    const pLow = p.remainYuan != null && p.remainYuan <= 5
+                    const official = b.error ? b.error : (b.supported && !b.error ? ((b.currency || 'CNY') + ' ' + Number(b.total || 0).toFixed(2)) : '未开放查询')
+                    return `<tr>
+                      <td><b>${p.name}</b><div class="muted">${p.hasKey ? 'Key 已配置' : 'Key 未配置'}${pLow ? ' · 余额偏低' : ''}</div></td>
+                      <td>${official}</td>
+                      <td>${yuan(p.remainYuan)}</td>
+                      <td>${p.remainShares == null ? '—' : shares(p.remainShares)}</td>
+                      <td>${money(p.todayCostFen)}<div class="muted">${tokens(p.todayTokens)}</div></td>
+                      <td>${money(p.usedCostFen)}<div class="muted">${tokens(p.usedTokens)}</div></td>
+                    </tr>`
+                  }).join('') || '<tr><td colspan="6" class="muted">还没有供应商</td></tr>'}
+                </table></div>
+              </div>
+              ${list.map((p) => `<div class="card">
+                  <h3>${p.name} 模型用量</h3>
+                  <div class="table-wrap"><table>
+                    <tr><th>模型</th><th>今日用量</th><th>累计进货</th></tr>
+                    ${(p.models || []).map((m) => `<tr>
+                      <td><b>${m.displayName}</b><div class="muted">${m.id}</div></td>
+                      <td>${tokens(m.todayTokens)}<div class="muted">${money(m.todayCostFen)}</div></td>
+                      <td>${tokens(m.usedTokens)}<div class="muted">${money(m.usedCostFen)}</div></td>
+                    </tr>`).join('') || '<tr><td colspan="3" class="muted">该供应商下还没有模型</td></tr>'}
+                  </table></div>
+                </div>`).join('')}`
+            try {
+              await waitChart()
+              await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+              if (window.Chart) {
+                window.Chart.defaults.font.family = 'Inter, "Noto Sans SC", system-ui, sans-serif'
+                window.Chart.defaults.font.size = 11
+                window.Chart.defaults.color = '#57534e'
+                window.Chart.defaults.borderColor = '#e4e4de'
+              }
+              const axis = {
+                grid: { color: '#ecece8' },
+                ticks: { maxRotation: 0, autoSkip: true },
+              }
+              paintChart($('chart-trend'), 'empty-trend', false, {
+                type: 'line',
+                data: {
+                  labels: (trend.days || []).map(shortDay),
+                  datasets: (trend.models || []).map((m, i) => ({
+                    label: m.displayName,
+                    data: m.tokens || [],
+                    borderColor: CHART_COLORS[i % CHART_COLORS.length],
+                    backgroundColor: CHART_COLORS[i % CHART_COLORS.length] + '33',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                    borderWidth: 2,
+                  })),
+                },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  animation: chartMotion(),
+                  interaction: { mode: 'index', intersect: false },
+                  plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } } },
+                  scales: {
+                    x: axis,
+                    y: { ...axis, beginAtZero: true, ticks: { callback: (v) => fmtCount(v) } },
+                  },
+                },
+              })
+              const remainRows = vendorRemain.slice().sort((a, b) => Number(b.remainYuan) - Number(a.remainYuan))
+              paintChart($('chart-remain'), 'empty-remain', remainRows.length === 0, {
+                type: 'bar',
+                data: {
+                  labels: remainRows.map((p) => p.name),
+                  datasets: [{
+                    label: '等价人民币',
+                    data: remainRows.map((p) => Number(p.remainYuan || 0)),
+                    backgroundColor: remainRows.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]),
+                    borderSkipped: false,
+                    borderRadius: 4,
+                  }],
+                },
+                options: {
+                  indexAxis: 'y',
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  animation: chartMotion(),
+                  plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                      callbacks: {
+                        label: (ctx) => {
+                          const row = remainRows[ctx.dataIndex]
+                          return ' ' + yuan(ctx.raw) + '  ·  约 ' + (row && row.remainShares != null ? shares(row.remainShares) : '—')
+                        },
+                      },
+                    },
+                  },
+                  scales: {
+                    x: { ...axis, beginAtZero: true, ticks: { callback: (v) => '¥' + Number(v).toFixed(0) } },
+                    y: { grid: { display: false }, ticks: { autoSkip: false } },
+                  },
+                },
+              })
+              paintChart($('chart-balance'), 'empty-balance', remainRows.length === 0, {
+                type: 'doughnut',
+                data: {
+                  labels: remainRows.map((p) => p.name),
+                  datasets: [{
+                    data: remainRows.map((p) => Number(p.remainYuan || 0)),
+                    backgroundColor: remainRows.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]),
+                    borderWidth: 0,
+                    hoverOffset: 0,
+                  }],
+                },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  animation: chartMotion(),
+                  cutout: '62%',
+                  plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } },
+                    tooltip: {
+                      callbacks: {
+                        label: (ctx) => {
+                          const row = remainRows[ctx.dataIndex]
+                          return ' ' + ctx.label + ' ' + yuan(ctx.raw) + '  ·  约 ' + (row && row.remainShares != null ? shares(row.remainShares) : '—')
+                        },
+                      },
+                    },
+                  },
+                },
+              })
+            } catch (err) {
+              ;['empty-trend', 'empty-remain', 'empty-balance'].forEach((id) => {
+                const box = $(id)
+                if (!box) return
+                box.classList.add('is-on')
+                box.hidden = false
+                box.textContent = '图表未能加载：' + (err && err.message ? err.message : err)
+              })
+            }
+            const btn = $('mon-refresh')
+            if (btn) btn.onclick = async () => {
+              btn.disabled = true
+              btn.textContent = '查询中…'
+              try {
+                await renderMonitor(await api('/v1/admin/vendor-monitor?refresh=1'))
+              } catch (err) {
+                btn.disabled = false
+                btn.textContent = '刷新余额'
+                alert(err && err.message ? err.message : err)
+              }
+            }
+          }
+          await renderMonitor(data)
+          return
+        }
+        if (tab === 'users') {
+          const [{ list }, pkgs] = await Promise.all([api('/v1/admin/users'), api('/v1/admin/packages')])
+          const options = pkgs.list.map((p) => `<option value="${p.id}">${p.name}</option>`).join('')
+          main.innerHTML = `<div class="toolbar"><div><h1>用户</h1><p class="muted">封禁、开通套餐、补份额</p></div></div>
+            <div class="card"><div class="table-wrap"><table><tr><th>账号</th><th>角色</th><th>状态</th><th>操作</th></tr>
+            ${list.map((u) => `<tr>
+              <td><b>${u.name}</b><div class="muted">${u.phone || '未绑定手机'}<br>${u.email}<br>${u.id}</div></td>
+              <td>${u.role === 'admin' ? '<span class="badge">工作人员</span>' : '<span class="badge muted">用户</span>'}</td>
+              <td>${u.status === 'disabled' ? '<span class="badge warn">已封禁</span>' : '<span class="badge">正常</span>'}</td>
+              <td class="row-actions">
+                <button class="btn sm light" data-ban="${u.id}">封禁</button>
+                <select data-pkg="${u.id}">${options}</select>
+                <button class="btn sm" data-grant="${u.id}">开通</button>
+                <input data-delta="${u.id}" type="number" placeholder="补份额" style="width:110px">
+                <button class="btn sm light" data-credit="${u.id}">补发</button>
+              </td>
+            </tr>`).join('')}</table></div></div>`
+          main.querySelectorAll('[data-ban]').forEach((el) => el.onclick = async () => { await api('/v1/admin/users/' + el.dataset.ban + '/ban', { method: 'POST', body: {} }); shellContent() })
+          main.querySelectorAll('[data-grant]').forEach((el) => el.onclick = async () => {
+            const sel = main.querySelector(`select[data-pkg="${el.dataset.grant}"]`)
+            await api('/v1/admin/users/' + el.dataset.grant + '/grant', { method: 'POST', body: { packageId: sel.value } })
+            shellContent()
+          })
+          main.querySelectorAll('[data-credit]').forEach((el) => el.onclick = async () => {
+            const input = main.querySelector(`input[data-delta="${el.dataset.credit}"]`)
+            await api('/v1/admin/users/' + el.dataset.credit + '/credit', { method: 'POST', body: { delta: Number(input.value || 0) } })
+            shellContent()
+          })
+          return
+        }
+        if (tab === 'packages') {
+          const [{ list }, pricing] = await Promise.all([api('/v1/admin/packages'), api('/v1/admin/pricing')])
+          const analysisOf = (id) => (pricing.packages || []).find((x) => x.id === id)
+          main.innerHTML = `<div class="toolbar"><div><h1>套餐</h1><p class="muted">价格单位为分。份额是内部点数，DeepSeek 上 1 Token = 1 份额。用户只看到用量百分比。</p></div></div>
+            ${list.map((p) => {
+              const a = analysisOf(p.id)
+              const ds = (a?.byModel || []).find((m) => m.modelId === 'deepseek-chat') || (a?.byModel || [])[0]
+              const hint = a && ds ? `<p class="price-hint">含 ${shares(p.token_quota)}。用 ${ds.displayName} 可消耗 ${tokens(ds.userTokens)}，官网进货 ${money(ds.costFen)}，卖 ${money(p.price_fen)}，利润 ${money(ds.profitFen)}（${ds.marginPct == null ? '赠送' : pct(ds.marginPct)}）。各模型对照见「差价 → 套餐与份额」。</p>` : ''
+              return `<div class="card" data-pkg-card="${p.id}">
+              <div class="form-grid">
+                <div><label>名称</label><input data-f="name" value="${p.name || ''}"></div>
+                <div><label>描述</label><input data-f="description" value="${p.description || ''}"></div>
+                <div><label>价格（分）</label><input data-f="price_fen" type="number" value="${p.price_fen}"></div>
+                <div><label>周期（天）</label><input data-f="period_days" type="number" value="${p.period_days}"></div>
+                <div><label>份额配额</label><input data-f="token_quota" type="number" value="${p.token_quota}"></div>
+                <div><label>席位</label><input data-f="seats" type="number" value="${p.seats || 1}"></div>
+              </div>
+              <label>模型（逗号分隔，* 表示全部）</label><input data-f="models" value="${parseJson(p.models_json, []).join(', ')}">
+              <div class="checks">
+                <label><input data-f="allow_mcp" type="checkbox" ${p.allow_mcp ? 'checked' : ''}> 允许 MCP</label>
+                <label><input data-f="allow_team" type="checkbox" ${p.allow_team ? 'checked' : ''}> 允许团队</label>
+                <label><input data-f="enabled" type="checkbox" ${p.enabled ? 'checked' : ''}> 上架</label>
+              </div>
+              ${hint}
+              <p></p>
+              <button class="btn" data-save="${p.id}">保存</button>
+            </div>`
+            }).join('')}
+            <div class="card"><h3>新建套餐</h3>
+              <div class="form-grid">
+                <div><label>slug</label><input id="np-slug"></div>
+                <div><label>名称</label><input id="np-name"></div>
+                <div><label>价格（分）</label><input id="np-price" type="number" value="9900"></div>
+                <div><label>份额配额</label><input id="np-quota" type="number" value="2000000"></div>
+              </div>
+              <p></p><button class="btn" id="np-add">创建</button>
+            </div>`
+          main.querySelectorAll('[data-save]').forEach((el) => el.onclick = async () => {
+            const card = el.closest('[data-pkg-card]')
+            const val = (f) => card.querySelector(`[data-f="${f}"]`)
+            await api('/v1/admin/packages/' + el.dataset.save, {
+              method: 'PUT',
+              body: {
+                name: val('name').value,
+                description: val('description').value,
+                price_fen: Number(val('price_fen').value),
+                period_days: Number(val('period_days').value),
+                token_quota: Number(val('token_quota').value),
+                models: val('models').value.split(',').map((s) => s.trim()).filter(Boolean),
+                seats: Number(val('seats').value),
+                allow_mcp: val('allow_mcp').checked,
+                allow_team: val('allow_team').checked,
+                enabled: val('enabled').checked,
+              },
+            })
+            shellContent()
+          })
+          $('np-add').onclick = async () => {
+            await api('/v1/admin/packages', {
+              method: 'POST',
+              body: { slug: $('np-slug').value, name: $('np-name').value, price_fen: Number($('np-price').value), token_quota: Number($('np-quota').value) },
+            })
+            shellContent()
+          }
+          return
+        }
+        if (tab === 'pricing') {
+          state.pricingData = await api('/v1/admin/pricing')
+          const cfg = state.pricingData.profitConfig
+          if (cfg) {
+            state.profitMode = cfg.mode || 'margin_pct'
+            state.profitValue = Number(cfg.value) || 50
+          }
+          drawPricing()
+          return
+        }
+        if (tab === 'providers') {
+          const [{ list, models }, appsPack] = await Promise.all([
+            api('/v1/admin/providers'),
+            api('/v1/admin/connector-apps').catch(() => ({ list: [] })),
+          ])
+          const apps = appsPack.list || []
+          const esc = (value) => String(value || '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
+          main.innerHTML = `<div class="toolbar"><div><h1>三方模型供应商</h1><p class="muted">厂商 Key 只能在这里配置。DeepSeek 从 platform.deepseek.com 复制，以 <code>sk-</code> 开头；不要把「API Key」几个字一起粘进去。未保存 Key 的供应商不可调用。余额与各模型余量在「监测」。</p></div></div>
+            ${list.map((p) => `<div class="card">
+              <h3>${p.name}</h3>
+              <p>${p.has_key ? '<span class="badge">Key 已配置</span>' : '<span class="badge warn">Key 未配置，该供应商不可用</span>'} · ${p.enabled ? '启用' : '停用'}</p>
+              <label>Base URL</label><input id="url-${p.id}" value="${p.base_url || ''}">
+              <label>API Key（留空则不改已保存的 Key）</label><input id="key-${p.id}" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk- 开头，不要带 Key、Bearer 等文字">
+              <p></p>
+              <button class="btn" data-save-p="${p.id}">保存</button>
+              ${p.has_key ? `<button class="btn light" data-clear-p="${p.id}">清除 Key</button>` : ''}
+              <button class="btn light" data-toggle-p="${p.id}" data-on="${p.enabled ? 1 : 0}">${p.enabled ? '停用' : '启用'}</button>
+              ${p.top_up_url ? `<a class="btn light" href="${p.top_up_url}" target="_blank" rel="noopener">去官网充值</a>` : ''}
+            </div>`).join('')}
+            <div class="card"><h3>模型映射</h3><p class="muted">份额和进货价在「差价」页配置。生图 / 生视频按次扣份额，对话模型 1 Token 乘倍率。</p><div class="table-wrap"><table><tr><th>ID</th><th>名称</th><th>供应商</th><th>类型</th><th>扣额</th><th>输入/输出（分/百万）</th></tr>
+            ${(models || []).map((m) => `<tr><td>${m.id}</td><td>${m.display_name || m.name}</td><td>${m.provider_id}</td><td>${m.kind === 'image' ? '生图' : m.kind === 'video' ? '生视频' : '对话'}</td><td>${m.kind && m.kind !== 'chat' ? (m.unit_fen || 0) + ' 分/次' : (m.multiplier || 1) + ' 份额'}</td><td>${m.input_fen_per_m || 0} / ${m.output_fen_per_m || 0}</td></tr>`).join('')}</table></div></div>
+            <div class="card"><h3>新增供应商</h3>
+              <div class="form-grid">
+                <div><label>ID</label><input id="npv-id" placeholder="prov_xxx"></div>
+                <div><label>名称</label><input id="npv-name" placeholder="某厂商"></div>
+                <div><label>Base URL</label><input id="npv-url" placeholder="https://api.example.com/v1"></div>
+                <div><label>API Key</label><input id="npv-key" type="password" autocomplete="off"></div>
+              </div>
+              <p></p><button class="btn" id="npv-add">创建</button>
+            </div>
+            <div class="card" id="connector-oauth"><h3>连接器浏览器登录</h3>
+              <p class="muted">钉钉连接器走客户本机 CLI 登录，不使用这里的 Client ID。其他连接器仍由平台配一次：客户点 + 只会打开浏览器，不会看到 Client ID。Secret 留空表示不改已保存的值。回调地址要原样填到开放平台。</p>
+              ${apps.map((app) => `<div class="form-grid" style="margin-top:16px">
+                <div><label>${esc(app.name)} Client ID</label><input id="oa-id-${esc(app.id)}" value="${esc(app.clientId)}" autocomplete="off"></div>
+                <div><label>Client Secret${app.hasSecret ? '（已保存）' : ''}</label><input id="oa-secret-${esc(app.id)}" type="password" autocomplete="new-password" placeholder="${app.hasSecret ? '留空则不修改' : '必填'}"></div>
+              </div>
+              <p class="muted">回调地址：<code>${esc(app.redirectUri)}</code> ${app.ready ? '<span class="badge">可浏览器登录</span>' : '<span class="badge warn">未配齐</span>'}</p>
+              <button class="btn" data-save-oa="${esc(app.id)}">保存 ${esc(app.name)}</button>`).join('') || '<p class="muted">没有可配置的浏览器登录</p>'}
+            </div>`
+          main.querySelectorAll('[data-save-p]').forEach((el) => el.onclick = async () => {
+            const body = { base_url: $('url-' + el.dataset.saveP).value, enabled: true }
+            const key = $('key-' + el.dataset.saveP).value.trim()
+            if (key) body.api_key = key.replace(/^(api[_-\s]?key|key|bearer)\s*[:=]?\s*/i, '').trim()
+            await api('/v1/admin/providers/' + el.dataset.saveP, { method: 'PUT', body })
+            shellContent()
+          })
+          main.querySelectorAll('[data-clear-p]').forEach((el) => el.onclick = async () => {
+            await api('/v1/admin/providers/' + el.dataset.clearP, { method: 'PUT', body: { api_key: '' } })
+            shellContent()
+          })
+          main.querySelectorAll('[data-toggle-p]').forEach((el) => el.onclick = async () => {
+            await api('/v1/admin/providers/' + el.dataset.toggleP, { method: 'PUT', body: { enabled: el.dataset.on !== '1' } })
+            shellContent()
+          })
+          $('npv-add').onclick = async () => {
+            await api('/v1/admin/providers', {
+              method: 'POST',
+              body: { id: $('npv-id').value.trim(), name: $('npv-name').value.trim(), base_url: $('npv-url').value.trim(), api_key: $('npv-key').value.trim() },
+            })
+            shellContent()
+          }
+          main.querySelectorAll('[data-save-oa]').forEach((el) => el.onclick = async () => {
+            const id = el.dataset.saveOa
+            await api('/v1/admin/connector-apps', {
+              method: 'PUT',
+              body: {
+                id,
+                clientId: $('oa-id-' + id).value.trim(),
+                clientSecret: $('oa-secret-' + id).value,
+              },
+            })
+            shellContent()
+          })
+          if (new URLSearchParams(location.search).get('focus') === 'oauth') {
+            document.getElementById('connector-oauth')?.scrollIntoView({ block: 'start' })
+          }
+          return
+        }
+        if (tab === 'orders') {
+          const { list } = await api('/v1/admin/orders')
+          main.innerHTML = `<div class="toolbar"><div><h1>订单</h1></div></div>
+            <div class="card"><div class="table-wrap"><table><tr><th>ID</th><th>用户</th><th>金额</th><th>状态</th><th></th></tr>
+            ${list.map((o) => `<tr>
+              <td>${o.id}</td><td>${o.user_id}</td><td>${money(o.amount_fen)}</td>
+              <td>${o.status}</td>
+              <td>${o.status === 'paid' ? `<button class="btn sm light" data-refund="${o.id}">退款</button>` : ''}</td>
+            </tr>`).join('') || '<tr><td colspan="5" class="muted">暂无订单</td></tr>'}</table></div></div>`
+          main.querySelectorAll('[data-refund]').forEach((el) => el.onclick = async () => { await api('/v1/admin/orders/' + el.dataset.refund + '/refund', { method: 'POST', body: {} }); shellContent() })
+          return
+        }
+        if (tab === 'invoices') {
+          const { list } = await api('/v1/admin/invoices')
+          main.innerHTML = `<div class="toolbar"><div><h1>发票</h1></div></div>
+            <div class="card"><div class="table-wrap"><table><tr><th>抬头</th><th>税号</th><th>金额</th><th>状态</th><th></th></tr>
+            ${list.map((i) => `<tr>
+              <td>${i.title}</td><td>${i.tax_no || ''}</td><td>${money(i.amount_fen)}</td><td>${i.status}</td>
+              <td>${i.status !== 'issued' ? `<button class="btn sm" data-issue="${i.id}">开具</button>` : ''}</td>
+            </tr>`).join('') || '<tr><td colspan="5" class="muted">暂无发票</td></tr>'}</table></div></div>`
+          main.querySelectorAll('[data-issue]').forEach((el) => el.onclick = async () => { await api('/v1/admin/invoices/' + el.dataset.issue + '/issue', { method: 'POST', body: {} }); shellContent() })
+          return
+        }
+        if (tab === 'coupons') {
+          const { list } = await api('/v1/admin/coupons')
+          main.innerHTML = `<div class="toolbar"><div><h1>优惠码</h1></div></div>
+            <div class="card"><div class="table-wrap"><table><tr><th>代码</th><th>折扣</th><th>状态</th></tr>
+            ${list.map((c) => `<tr><td>${c.code}</td><td>${c.percent_off}%</td><td>${c.enabled ? '启用' : '停用'}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">暂无优惠码</td></tr>'}</table></div></div>
+            <div class="card"><h3>新建</h3>
+              <label>代码</label><input id="cp-code">
+              <label>折扣百分比</label><input id="cp-off" type="number" value="10">
+              <p></p><button class="btn" id="cp-add">创建</button>
+            </div>`
+          $('cp-add').onclick = async () => {
+            await api('/v1/admin/coupons', { method: 'POST', body: { code: $('cp-code').value, percentOff: Number($('cp-off').value) } })
+            shellContent()
+          }
+          return
+        }
+        if (tab === 'usage') {
+          const { list } = await api('/v1/admin/usage')
+          main.innerHTML = `<div class="toolbar"><div><h1>用量</h1><p class="muted">成本列为该次请求的上游进货成本，不是向用户收取的费用。</p></div></div>
+            <div class="card"><div class="table-wrap"><table><tr><th>时间</th><th>用户</th><th>模型</th><th>输入 Token</th><th>输出 Token</th><th>消耗份额</th><th>进货成本</th></tr>
+            ${list.map((u) => `<tr>
+              <td>${new Date(u.created_at).toLocaleString()}</td>
+              <td>${u.user_id}</td><td>${u.model}</td>
+              <td>${u.prompt_tokens}</td><td>${u.completion_tokens}</td>
+              <td>${shares(u.billed_tokens)}</td><td>${money(u.cost_fen)}</td>
+            </tr>`).join('') || '<tr><td colspan="7" class="muted">暂无用量</td></tr>'}</table></div></div>`
+          return
+        }
+        state.tab = 'overview'
+        location.hash = '#/overview'
+      } catch (e) {
+        main.innerHTML = `<p class="err" role="alert">${e.message}</p>`
+      }
+    }
+
+    function renderShell() {
+      document.title = '内部控制台'
+      $('root').innerHTML = `<header class="ops-header">
+        <div class="ops-brand">
+          <img src="/logo.jpg" alt="">
+          内部控制台
+          <span class="staff-tag">STAFF</span>
+          <span class="sub">仅工作人员</span>
+        </div>
+        <div class="header-actions">${sessionChip()}</div>
+      </header>
+      <div class="shell">
+        <nav class="side" id="side">${TABS.map(([id, label]) => `<a href="#/${id}" data-tab="${id}">${ICONS[id] || ''}${label}</a>`).join('')}</nav>
+        <main class="main" id="opsMain"></main>
+      </div>`
+      bindLogout()
+      markTab()
+      shellContent()
+    }
+
+    function markTab() {
+      document.querySelectorAll('#side a').forEach((a) => a.classList.toggle('on', a.dataset.tab === state.tab))
+    }
+
+    async function render() {
+      state.tab = location.hash.slice(2) || 'overview'
+      if (!state.token) {
+        loginView()
+        return
+      }
+      try {
+        state.me = await api('/v1/me')
+      } catch {
+        clearSession()
+        loginView({ error: '工作人员会话已失效，请重新登录。' })
+        return
+      }
+      if (state.me.user?.role !== 'admin') {
+        clearSession()
+        loginView({ error: '此账号不是工作人员账号。用户请到官网登录。' })
+        return
+      }
+      renderShell()
+    }
+
+    window.addEventListener('hashchange', () => {
+      if (!state.me?.user || state.me.user.role !== 'admin') return
+      state.tab = location.hash.slice(2) || 'overview'
+      markTab()
+      shellContent()
+    })
+    render()
+  </script>
+</body>
+</html>

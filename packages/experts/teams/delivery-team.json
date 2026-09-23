@@ -1,0 +1,7 @@
+{
+  "id": "delivery-team",
+  "name": "交付专家团",
+  "description": "调研 + 写作 + 表格，适合周报和汇报材料。",
+  "leaderId": "writer",
+  "memberIds": ["researcher", "writer", "analyst"]
+}

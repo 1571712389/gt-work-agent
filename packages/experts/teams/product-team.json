@@ -1,0 +1,7 @@
+{
+  "id": "product-team",
+  "name": "产研专家团",
+  "description": "需求、研发、设计一起拆任务，适合方案和发版。",
+  "leaderId": "pm",
+  "memberIds": ["pm", "engineer", "designer"]
+}

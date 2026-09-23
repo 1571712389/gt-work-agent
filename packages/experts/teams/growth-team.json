@@ -1,0 +1,7 @@
+{
+  "id": "growth-team",
+  "name": "增长专家团",
+  "description": "销售、客服、文书协同，适合对外沟通和跟进。",
+  "leaderId": "sales",
+  "memberIds": ["sales", "support", "writer"]
+}
