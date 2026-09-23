@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   CheckCircle2,
   CircleAlert,
   CircleUser,
+  Download,
   FolderOpen,
   RefreshCw,
   Shield,
@@ -64,6 +65,32 @@ export default function SettingsPage() {
   const [updateMsg, setUpdateMsg] = useState('')
   const [updateKind, setUpdateKind] = useState<'ok' | 'warn' | ''>('')
   const [checking, setChecking] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [canDownload, setCanDownload] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    const stop = window.gt.account.onUpdateProgress(({ received, total }) => {
+      if (!alive) return
+      setProgress(total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0)
+    })
+    void window.gt.account.checkUpdate().then((info) => {
+      if (!alive) return
+      setCanDownload(Boolean(info.available))
+      setUpdateKind(info.ok && (info.available || Boolean(info.fileName)) ? 'ok' : 'warn')
+      setUpdateMsg(info.message)
+    }).catch(() => {
+      if (!alive) return
+      setUpdateKind('warn')
+      setUpdateMsg('检查更新失败')
+    })
+    return () => {
+      alive = false
+      stop()
+    }
+  }, [])
+
   if (!settings) {
     return (
       <PageShell title="设置" subtitle="正在加载客户端配置…">
@@ -161,14 +188,19 @@ export default function SettingsPage() {
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
-              disabled={checking}
+              disabled={checking || downloading}
               className="inline-flex items-center gap-1.5 rounded-xl border border-line bg-raised px-3 py-2 text-sm transition-colors duration-200 hover:bg-line disabled:opacity-60"
               onClick={async () => {
                 setChecking(true)
                 try {
                   const info = await window.gt.account.checkUpdate()
-                  setUpdateKind(info.ok ? 'ok' : 'warn')
-                  setUpdateMsg(info.ok ? `更新源版本 ${info.version}` : info.message || '暂无更新')
+                  setCanDownload(Boolean(info.available))
+                  setUpdateKind(info.ok && (info.available || Boolean(info.fileName)) ? 'ok' : 'warn')
+                  setUpdateMsg(info.message)
+                } catch (err) {
+                  setCanDownload(false)
+                  setUpdateKind('warn')
+                  setUpdateMsg(err instanceof Error ? err.message : '检查更新失败')
                 } finally {
                   setChecking(false)
                 }
@@ -177,6 +209,37 @@ export default function SettingsPage() {
               <RefreshCw size={14} className={checking ? 'animate-spin' : ''} />
               {checking ? '检查中…' : '检查更新'}
             </button>
+            {canDownload ? (
+              <button
+                type="button"
+                disabled={downloading}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-sm text-white transition-colors duration-200 hover:bg-primary/90 disabled:opacity-60"
+                onClick={async () => {
+                  setDownloading(true)
+                  setProgress(0)
+                  setUpdateKind('ok')
+                  setUpdateMsg('正在下载安装包…')
+                  try {
+                    const result = await window.gt.account.downloadUpdate()
+                    if (!result.ok) {
+                      setUpdateKind('warn')
+                      setUpdateMsg(result.message || '下载失败')
+                      return
+                    }
+                    setProgress(100)
+                    setUpdateMsg('已下载到系统「下载」文件夹，打开安装包即可升级。')
+                  } catch (err) {
+                    setUpdateKind('warn')
+                    setUpdateMsg(err instanceof Error ? err.message : '下载失败')
+                  } finally {
+                    setDownloading(false)
+                  }
+                }}
+              >
+                <Download size={14} />
+                {downloading ? `下载中 ${progress}%` : '下载新版本'}
+              </button>
+            ) : null}
             {updateMsg ? (
               <span
                 role="status"

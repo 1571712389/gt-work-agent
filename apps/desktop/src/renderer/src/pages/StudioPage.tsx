@@ -289,7 +289,7 @@ export default function StudioPage() {
     <PageShell wide title="创作">
       {!loggedIn ? (
         <div className="gt-card max-w-xl p-6">
-          <p className="text-sm text-muted">登录后才能生成。体验版不含生图 / 生视频，请升级专业版。</p>
+          <p className="text-sm text-muted">登录并拥有可用额度后，可以使用平台已接入的生图和生视频模型。</p>
           <button
             type="button"
             className="mt-4 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white transition-colors duration-200 hover:bg-primary/90"
@@ -320,15 +320,8 @@ export default function StudioPage() {
 
             {!models.length ? (
               <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-                <p className="text-sm text-primary">当前套餐没有{kind === 'image' ? '生图' : '生视频'}模型。</p>
-                <p className="mt-1 text-xs text-muted">体验版只含对话。专业版含 Seedream / Seedance Fast，团队版含全部。</p>
-                <button
-                  type="button"
-                  className="mt-3 rounded-xl bg-primary px-3 py-1.5 text-sm font-medium text-white transition-colors duration-200 hover:bg-primary/90"
-                  onClick={() => void window.gt.account.openShop()}
-                >
-                  升级套餐
-                </button>
+                <p className="text-sm text-primary">平台还没有启用{kind === 'image' ? '生图' : '生视频'}模型。</p>
+                <p className="mt-1 text-xs text-muted">请到后台「供应商」启用对应模型和厂商。有额度的账号都可以使用已接入的模型。</p>
               </div>
             ) : (
               <>

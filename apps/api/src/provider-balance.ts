@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { many, one, run, now } from './db'
 import { mixFenPerMillion, BASE_MODEL_ID, type ModelPricing } from './pricing'
 import { normalizeProviderKey } from './provider-key'
@@ -7,6 +8,8 @@ export interface VendorAccount {
   name: string
   base_url: string
   api_key: string
+  access_key?: string
+  secret_key?: string
 }
 
 export interface VendorBalance {
@@ -79,6 +82,15 @@ export function topUpUrlFor(providerId: string): string {
   return TOP_UP[providerId] || ''
 }
 
+export function canQueryVendorBalance(providerId: string): boolean {
+  return providerId === 'prov_deepseek' || providerId === 'prov_kimi' || providerId === 'prov_doubao'
+}
+
+function unsupportedBalanceMessage(providerId: string): string {
+  if (providerId === 'prov_doubao') return '请在供应商页填写火山 Access Key 和 Secret Key'
+  return '该厂商未开放余额查询接口'
+}
+
 function cacheKey(providerId: string): string {
   return `vendor_balance_${providerId}`
 }
@@ -128,12 +140,103 @@ function money(value: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+function kimiBalanceUrl(baseUrl: string): string {
+  const base = String(baseUrl || 'https://api.moonshot.cn/v1').trim().replace(/\/+$/, '')
+  if (/\/v\d+$/i.test(base)) return `${base}/users/me/balance`
+  return `${base}/v1/users/me/balance`
+}
+
+function kimiCurrency(baseUrl: string): string {
+  return /moonshot\.ai/i.test(baseUrl) ? 'USD' : 'CNY'
+}
+
+function hmac(key: Buffer | string, content: string): Buffer {
+  return crypto.createHmac('sha256', key).update(content, 'utf8').digest()
+}
+
+function sha256(content: string): string {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex')
+}
+
+function volcHeaders(ak: string, sk: string, body: string): Record<string, string> {
+  const host = 'billing.volcengineapi.com'
+  const xDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '')
+  const shortDate = xDate.slice(0, 8)
+  const bodyHash = sha256(body)
+  const query = 'Action=QueryBalanceAcct&Version=2022-01-01'
+  const headerMap: Record<string, string> = {
+    'content-type': 'application/json',
+    host,
+    'x-content-sha256': bodyHash,
+    'x-date': xDate,
+  }
+  const names = Object.keys(headerMap).sort()
+  const canonical = [
+    'POST',
+    '/',
+    query,
+    names.map((name) => `${name}:${headerMap[name]}`).join('\n') + '\n',
+    names.join(';'),
+    bodyHash,
+  ].join('\n')
+  const scope = `${shortDate}/cn-north-1/billing/request`
+  const stringToSign = ['HMAC-SHA256', xDate, scope, sha256(canonical)].join('\n')
+  const signing = hmac(hmac(hmac(hmac(sk, shortDate), 'cn-north-1'), 'billing'), 'request')
+  const signature = crypto.createHmac('sha256', signing).update(stringToSign, 'utf8').digest('hex')
+  return {
+    'Content-Type': 'application/json',
+    Host: host,
+    'X-Date': xDate,
+    'X-Content-Sha256': bodyHash,
+    Authorization: `HMAC-SHA256 Credential=${ak}/${scope}, SignedHeaders=${names.join(';')}, Signature=${signature}`,
+  }
+}
+
+async function fetchVolcBalance(provider: VendorAccount, topUpUrl: string): Promise<VendorBalance> {
+  const ak = String(provider.access_key || '').trim()
+  const sk = String(provider.secret_key || '').trim()
+  if (!ak || !sk) {
+    return { supported: true, topUpUrl, error: '请填写火山 Access Key 和 Secret Key', checkedAt: now() }
+  }
+  const body = '{}'
+  try {
+    const res = await fetch('https://billing.volcengineapi.com/?Action=QueryBalanceAcct&Version=2022-01-01', {
+      method: 'POST',
+      headers: volcHeaders(ak, sk, body),
+      body,
+    })
+    const data = (await res.json().catch(() => ({}))) as {
+      ResponseMetadata?: { Error?: { Message?: string; Code?: string } }
+      Result?: { AvailableBalance?: string | number; CashBalance?: string | number }
+    }
+    const message = data.ResponseMetadata?.Error?.Message || data.ResponseMetadata?.Error?.Code
+    const total = money(data.Result?.AvailableBalance)
+    if (!res.ok || message || data.Result?.AvailableBalance == null) {
+      return { supported: true, topUpUrl, error: message || `查询失败 ${res.status}`, checkedAt: now() }
+    }
+    return {
+      supported: true,
+      available: total > 0,
+      currency: 'CNY',
+      total,
+      granted: 0,
+      toppedUp: money(data.Result?.CashBalance),
+      topUpUrl,
+      checkedAt: now(),
+    }
+  } catch (err) {
+    return { supported: true, topUpUrl, error: err instanceof Error ? err.message : String(err), checkedAt: now() }
+  }
+}
+
 export async function fetchVendorBalance(provider: VendorAccount): Promise<VendorBalance> {
   const topUpUrl = topUpUrlFor(provider.id)
   const key = normalizeProviderKey(provider.api_key)
+  if (provider.id === 'prov_doubao') return fetchVolcBalance(provider, topUpUrl)
   if (!key) return { supported: false, topUpUrl, error: '未配置 Key', checkedAt: now() }
-  if (provider.id !== 'prov_deepseek') {
-    return { supported: false, topUpUrl, error: '该厂商未开放余额查询接口', checkedAt: now() }
+  if (provider.id === 'prov_kimi') return fetchKimiBalance(provider, key, topUpUrl)
+  if (!canQueryVendorBalance(provider.id)) {
+    return { supported: false, topUpUrl, error: unsupportedBalanceMessage(provider.id), checkedAt: now() }
   }
   try {
     const res = await fetch(`${apiOrigin(provider.base_url)}/user/balance`, {
@@ -168,6 +271,46 @@ export async function fetchVendorBalance(provider: VendorAccount): Promise<Vendo
   }
 }
 
+async function fetchKimiBalance(provider: VendorAccount, key: string, topUpUrl: string): Promise<VendorBalance> {
+  try {
+    const res = await fetch(kimiBalanceUrl(provider.base_url), {
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+    })
+    const data = (await res.json().catch(() => ({}))) as {
+      code?: number
+      status?: boolean
+      message?: string
+      error?: { message?: string }
+      data?: { available_balance?: number; voucher_balance?: number; cash_balance?: number }
+      available_balance?: number
+      voucher_balance?: number
+      cash_balance?: number
+    }
+    const row = data.data && typeof data.data === 'object' ? data.data : data
+    if (!res.ok || data.status === false || (typeof data.code === 'number' && data.code !== 0) || typeof row.available_balance !== 'number') {
+      return {
+        supported: true,
+        topUpUrl,
+        error: data.error?.message || data.message || `查询失败 ${res.status}`,
+        checkedAt: now(),
+      }
+    }
+    const total = money(row.available_balance)
+    return {
+      supported: true,
+      available: total > 0,
+      currency: kimiCurrency(provider.base_url),
+      total,
+      granted: money(row.voucher_balance),
+      toppedUp: money(row.cash_balance),
+      topUpUrl,
+      checkedAt: now(),
+    }
+  } catch (err) {
+    return { supported: true, topUpUrl, error: err instanceof Error ? err.message : String(err), checkedAt: now() }
+  }
+}
+
 export async function refreshVendorBalance(provider: VendorAccount): Promise<VendorBalance> {
   const balance = await fetchVendorBalance(provider)
   cacheVendorBalance(provider.id, balance)
@@ -177,7 +320,7 @@ export async function refreshVendorBalance(provider: VendorAccount): Promise<Ven
 export function markVendorEmpty(provider: VendorAccount): void {
   const prev = readCachedVendorBalance(provider.id)
   cacheVendorBalance(provider.id, {
-    supported: provider.id === 'prov_deepseek',
+    supported: canQueryVendorBalance(provider.id),
     available: false,
     currency: prev?.currency || 'CNY',
     total: 0,
@@ -258,7 +401,7 @@ function remainFromVendor(
 
 export async function buildVendorMonitor(opts: { refresh?: boolean } = {}): Promise<MonitorPayload> {
   const providers = many<VendorAccount & { enabled: number }>(
-    `SELECT id, name, base_url, api_key, enabled FROM providers ORDER BY priority, id`,
+    `SELECT id, name, base_url, api_key, access_key, secret_key, enabled FROM providers ORDER BY priority, id`,
   )
   const models = many<ModelPricing & { display_name: string }>(
     `SELECT id, provider_id, display_name, multiplier, enabled, input_fen_per_m, output_fen_per_m, cache_hit_fen_per_m FROM models ORDER BY id`,
@@ -277,15 +420,25 @@ export async function buildVendorMonitor(opts: { refresh?: boolean } = {}): Prom
   const list: ProviderMonitor[] = []
   for (const provider of providers) {
     const hasKey = Boolean(normalizeProviderKey(provider.api_key))
+    const hasBalanceKey = provider.id === 'prov_doubao'
+      ? Boolean(String(provider.access_key || '').trim() && String(provider.secret_key || '').trim())
+      : hasKey
     let balance = readCachedVendorBalance(provider.id)
-    if (hasKey && provider.id === 'prov_deepseek' && needsLiveBalance(balance, opts.refresh)) {
+    const queryable = canQueryVendorBalance(provider.id)
+    if (hasBalanceKey && queryable && (needsLiveBalance(balance, opts.refresh) || balance?.supported === false)) {
       balance = await refreshVendorBalance(provider)
     }
     if (!balance) {
       balance = {
-        supported: provider.id === 'prov_deepseek',
+        supported: queryable,
         topUpUrl: topUpUrlFor(provider.id),
-        error: hasKey ? (provider.id === 'prov_deepseek' ? '尚未查询' : '该厂商未开放余额查询接口') : '未配置 Key',
+        error: hasBalanceKey
+          ? queryable
+            ? '尚未查询'
+            : unsupportedBalanceMessage(provider.id)
+          : provider.id === 'prov_doubao'
+            ? '请填写火山 Access Key 和 Secret Key'
+            : '未配置 Key',
       }
     }
     if (balance.checkedAt) latest = Math.max(latest, balance.checkedAt)
@@ -314,7 +467,7 @@ export async function buildVendorMonitor(opts: { refresh?: boolean } = {}): Prom
       name: provider.name,
       hasKey,
       enabled: Boolean(provider.enabled),
-      canQueryBalance: provider.id === 'prov_deepseek',
+      canQueryBalance: queryable,
       topUpUrl: topUpUrlFor(provider.id),
       balance,
       remainYuan: remain.yuan,
@@ -333,10 +486,12 @@ export async function buildVendorMonitor(opts: { refresh?: boolean } = {}): Prom
 
 export async function pollVendorBalances(): Promise<void> {
   const rows = many<VendorAccount>(
-    `SELECT id, name, base_url, api_key FROM providers WHERE enabled = 1 AND trim(api_key) != ''`,
+    `SELECT id, name, base_url, api_key, access_key, secret_key FROM providers WHERE enabled = 1`,
   )
   for (const row of rows) {
-    if (row.id !== 'prov_deepseek') continue
+    if (!canQueryVendorBalance(row.id)) continue
+    if (row.id === 'prov_doubao' && (!String(row.access_key || '').trim() || !String(row.secret_key || '').trim())) continue
+    if (row.id !== 'prov_doubao' && !normalizeProviderKey(row.api_key)) continue
     try {
       await refreshVendorBalance(row)
     } catch (err) {

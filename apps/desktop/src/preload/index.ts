@@ -78,6 +78,12 @@ const api: GtApi = {
     logout: () => invoke('account:logout'),
     entitlements: () => invoke('account:entitlements'),
     checkUpdate: () => invoke('app:checkUpdate'),
+    downloadUpdate: () => invoke('app:downloadUpdate'),
+    onUpdateProgress: (cb) => {
+      const listener = (_: unknown, progress: { received: number; total: number }) => cb(progress)
+      ipcRenderer.on('update:progress', listener)
+      return () => ipcRenderer.removeListener('update:progress', listener)
+    },
     openShop: () => invoke('app:openShop'),
     onDeepLink: (cb) => {
       const listener = (

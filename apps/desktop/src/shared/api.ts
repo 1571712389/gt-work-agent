@@ -29,7 +29,20 @@ export interface GtApi {
     cancelWebLogin: () => Promise<{ ok: boolean }>
     logout: () => Promise<AppSettings>
     entitlements: () => Promise<Entitlements | null>
-    checkUpdate: () => Promise<{ ok: boolean; version?: string; message?: string }>
+    checkUpdate: () =>
+      Promise<{
+        ok: boolean
+        current: string
+        version: string
+        available: boolean
+        platform: 'windows' | 'mac' | 'other'
+        url?: string
+        fileName?: string
+        size?: number
+        message: string
+      }>
+    downloadUpdate: () => Promise<{ ok: boolean; path?: string; message?: string }>
+    onUpdateProgress: (cb: (progress: { received: number; total: number }) => void) => () => void
     openShop: () => Promise<void>
     onDeepLink: (
       cb: (payload: { url: string; host: string; path: string; query: Record<string, string> }) => void,

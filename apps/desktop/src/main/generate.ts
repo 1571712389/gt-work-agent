@@ -33,6 +33,55 @@ function authHeaders(): Record<string, string> {
   return { Authorization: `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' }
 }
 
+function accountDirs(): string[] {
+  const appData = app.getPath('appData')
+  const current = path.dirname(historyPath())
+  return [
+    current,
+    path.join(app.getPath('userData'), 'generations'),
+    path.join(appData, '@gt-workbench', 'desktop', 'generations'),
+    path.join(appData, '光途Work', 'generations'),
+  ]
+}
+
+function findLocalFile(jobId: string): string {
+  const exts = ['.mp4', '.webm', '.png', '.jpg', '.jpeg', '.webp', '.gif']
+  for (const dir of accountDirs()) {
+    for (const ext of exts) {
+      const file = path.join(dir, `${jobId}${ext}`)
+      if (fs.existsSync(file)) return file
+    }
+  }
+  return ''
+}
+
+async function uploadAccountMedia(jobId: string, file: string): Promise<boolean> {
+  const settings = loadSettings()
+  const ext = path.extname(file).toLowerCase() || '.bin'
+  const bytes = fs.readFileSync(file)
+  const resp = await fetch(`${origin(settings.apiBase)}/v1/generate/${encodeURIComponent(jobId)}/media`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/octet-stream', 'X-Media-Ext': ext },
+    body: bytes,
+  }).catch(() => null)
+  return Boolean(resp?.ok)
+}
+
+async function downloadAccountMedia(job: GenerateJob): Promise<string> {
+  const settings = loadSettings()
+  const resp = await fetch(`${origin(settings.apiBase)}/v1/generate/${encodeURIComponent(job.id)}/media`, {
+    headers: { Authorization: authHeaders().Authorization },
+  }).catch(() => null)
+  if (!resp?.ok) return ''
+  const type = resp.headers.get('content-type') || ''
+  const ext = type.includes('png') ? '.png' : type.includes('webp') ? '.webp' : type.includes('mp4') ? '.mp4' : type.includes('webm') ? '.webm' : job.kind === 'video' ? '.mp4' : '.jpg'
+  const dir = path.dirname(historyPath())
+  fs.mkdirSync(dir, { recursive: true })
+  const dest = path.join(dir, `${job.id}${ext}`)
+  fs.writeFileSync(dest, Buffer.from(await resp.arrayBuffer()))
+  return dest
+}
+
 function historyPath(): string {
   const settings = loadSettings()
   const scope = (settings.userEmail || 'signed-in').trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '_').slice(0, 80) || 'signed-in'
@@ -105,14 +154,23 @@ function attachLocal(job: GenerateJob): GenerateJob {
 }
 
 async function materialize(job: GenerateJob): Promise<GenerateJob> {
-  const withLocal = attachLocal(job)
+  const found = job.localPath && fs.existsSync(job.localPath) ? job.localPath : findLocalFile(job.id)
+  const withLocal = { ...attachLocal(job), ...(found ? { localPath: found } : {}) }
   if (withLocal.status !== 'succeeded') return upsertHistory(withLocal)
-  if (withLocal.localPath && fs.existsSync(withLocal.localPath)) return upsertHistory(withLocal)
+  if (withLocal.localPath && fs.existsSync(withLocal.localPath)) {
+    if (!withLocal.stored) await uploadAccountMedia(withLocal.id, withLocal.localPath).catch(() => undefined)
+    return upsertHistory({ ...withLocal, stored: true })
+  }
+  if (withLocal.stored) {
+    const localPath = await downloadAccountMedia(withLocal).catch(() => '')
+    if (localPath) return upsertHistory({ ...withLocal, localPath, stored: true })
+  }
   const url = (withLocal.urls || [])[0]
   if (!url) return upsertHistory(withLocal)
   try {
     const localPath = await downloadAsset(url, withLocal.kind, withLocal.id)
-    return upsertHistory({ ...withLocal, localPath })
+    await uploadAccountMedia(withLocal.id, localPath).catch(() => undefined)
+    return upsertHistory({ ...withLocal, localPath, stored: true })
   } catch {
     return upsertHistory(withLocal)
   }
@@ -172,8 +230,8 @@ export async function listGenerations(): Promise<GenerateJob[]> {
         .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
         .map((item) => {
           const prev = localById.get(item.id)
-          const next = { ...item, localPath: prev?.localPath }
-          return next.status === 'succeeded' && !next.localPath ? materialize(next) : next
+          const localPath = (prev?.localPath && fs.existsSync(prev.localPath) ? prev.localPath : '') || findLocalFile(item.id)
+          return materialize({ ...item, localPath: localPath || prev?.localPath })
         }),
     )
     writeHistory(list)

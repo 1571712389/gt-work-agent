@@ -24,12 +24,13 @@ import {
 import { applyCoupon, createOrder, createRechargeOrder, creditTokens, markPaid, parseRechargeFen, rechargeQuote, refundOrder } from './billing'
 import { proxyChat } from './gateway'
 import { normalizeProviderKey } from './provider-key'
-import { buildVendorMonitor, clearVendorBalanceCache, startVendorBalanceWatch, topUpUrlFor } from './provider-balance'
+import { buildVendorMonitor, canQueryVendorBalance, clearVendorBalanceCache, startVendorBalanceWatch, topUpUrlFor } from './provider-balance'
 import { consumeSmsCode, isCnMobile, issueSmsCode, normalizePhone } from './sms'
 import { consumeEmailCode, isEmail, isQqMailbox, issueEmailCode, normalizeEmail } from './mail'
 import { approveDesktopAuth, pollDesktopAuth, startDesktopAuth } from './desktop-auth'
+import { listDownloads, resolveUpdateFile, updateYaml } from './downloads'
 import { applySuggestedMultipliers, buildPricingReport, MODEL_CATALOG, quotaFromProfit, type ModelPricing, type ProfitMode } from './pricing'
-import { getGeneration, listGenerations, quoteGeneration, startGeneration } from './generate'
+import { getGeneration, listGenerations, mediaFile, mediaType, quoteGeneration, saveGenerationMedia, startGeneration } from './generate'
 import {
   deleteUserConnector,
   ensureConnectorTables,
@@ -59,13 +60,31 @@ function serveStatic(res: http.ServerResponse, filePath: string, contentType: st
 }
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Task-Id',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Task-Id, X-Media-Ext',
   'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...CORS })
   res.end(JSON.stringify(body))
+}
+
+function readRaw(req: http.IncomingMessage, max = 80_000_000): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > max) {
+        reject(new Error('文件过大'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
 }
 
 function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -191,11 +210,41 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { ok: true })
       return
     }
-    if (method === 'GET' && path === '/updates/latest.yml') {
-      res.writeHead(200, { 'Content-Type': 'text/yaml; charset=utf-8', ...CORS })
-      res.end(
-        `version: 0.1.0\nfiles:\n  - url: 光途Work-Setup-0.1.0.exe\npath: 光途Work-Setup-0.1.0.exe\nsha512: pending\nreleaseDate: ${new Date().toISOString()}\n`,
-      )
+    if (method === 'GET' && path === '/v1/downloads') {
+      json(res, 200, listDownloads())
+      return
+    }
+    if (method === 'GET' && (path === '/updates/latest.yml' || path === '/updates/latest-mac.yml')) {
+      const yaml = await updateYaml(path.endsWith('latest-mac.yml') ? 'mac' : 'windows')
+      if (!yaml) {
+        json(res, 404, { error: { message: '还没有对应系统的安装包' } })
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'text/yaml; charset=utf-8', 'Cache-Control': 'no-cache', ...CORS })
+      res.end(yaml)
+      return
+    }
+    if (method === 'GET' && path.startsWith('/updates/')) {
+      const name = decodeURIComponent(path.slice('/updates/'.length))
+      const file = resolveUpdateFile(name)
+      if (!file) {
+        json(res, 404, { error: { message: '安装包不存在' } })
+        return
+      }
+      const stat = fs.statSync(file)
+      const type = name.endsWith('.zip')
+        ? 'application/zip'
+        : name.endsWith('.yml')
+          ? 'text/yaml; charset=utf-8'
+          : 'application/octet-stream'
+      res.writeHead(200, {
+        'Content-Type': type,
+        'Content-Length': stat.size,
+        'Content-Disposition': `attachment; filename="${name.replace(/"/g, '')}"`,
+        'Cache-Control': 'no-cache',
+        ...CORS,
+      })
+      fs.createReadStream(file).pipe(res)
       return
     }
     if (method === 'GET') {
@@ -939,7 +988,7 @@ const server = http.createServer(async (req, res) => {
     if (method === 'GET' && path === '/v1/generate') {
       const user = requireUser(req, res)
       if (!user) return
-      const result = listGenerations(user, Number(url.searchParams.get('limit') || 30))
+      const result = await listGenerations(user, Number(url.searchParams.get('limit') || 30))
       json(res, result.status, result.body)
       return
     }
@@ -960,6 +1009,42 @@ const server = http.createServer(async (req, res) => {
       })
       json(res, result.status, result.body)
       return
+    }
+
+    {
+      const mediaMatch = path.match(/^\/v1\/generate\/([^/]+)\/media$/)
+      if (mediaMatch && (method === 'GET' || method === 'PUT')) {
+        const user = requireUser(req, res)
+        if (!user) return
+        const jobId = decodeURIComponent(mediaMatch[1])
+        if (method === 'PUT') {
+          try {
+            const bytes = await readRaw(req)
+            const ext = String(req.headers['x-media-ext'] || '').toLowerCase()
+            const saved = saveGenerationMedia(user.id, jobId, bytes, ext.startsWith('.') ? ext : `.${ext}`)
+            if (!saved) {
+              json(res, 404, { error: { message: '找不到这条创作记录' } })
+              return
+            }
+            json(res, 200, { ok: true, stored: true })
+          } catch (err) {
+            json(res, 400, { error: { message: err instanceof Error ? err.message : '保存作品失败' } })
+          }
+          return
+        }
+        const file = mediaFile(user.id, jobId)
+        if (!file) {
+          json(res, 404, { error: { message: '账号里还没有这份作品文件' } })
+          return
+        }
+        res.writeHead(200, {
+          'Content-Type': mediaType(file),
+          'Content-Length': fs.statSync(file).size,
+          ...CORS,
+        })
+        fs.createReadStream(file).pipe(res)
+        return
+      }
     }
 
     if (method === 'GET' && path.match(/^\/v1\/generate\/[^/]+$/)) {
@@ -1212,11 +1297,16 @@ const server = http.createServer(async (req, res) => {
         res,
         200,
         {
-          list: many(`SELECT id, name, base_url, enabled, priority, CASE WHEN trim(api_key) = '' THEN 0 ELSE 1 END as has_key FROM providers`).map(
-            (p: { id: string; name: string; base_url: string; enabled: number; priority: number; has_key: number }) => ({
+          list: many(
+            `SELECT id, name, base_url, enabled, priority,
+              CASE WHEN trim(api_key) = '' THEN 0 ELSE 1 END as has_key,
+              CASE WHEN trim(access_key) = '' OR trim(secret_key) = '' THEN 0 ELSE 1 END as has_billing_key
+             FROM providers`,
+          ).map(
+            (p: { id: string; name: string; base_url: string; enabled: number; priority: number; has_key: number; has_billing_key: number }) => ({
               ...p,
               top_up_url: topUpUrlFor(p.id),
-              can_query_balance: p.id === 'prov_deepseek',
+              can_query_balance: canQueryVendorBalance(p.id),
             }),
           ),
           models: many(`SELECT * FROM models`),
@@ -1249,6 +1339,11 @@ const server = http.createServer(async (req, res) => {
           body.enabled === undefined ? null : body.enabled ? 1 : 0,
           pid,
         ])
+      }
+      if (body.access_key !== undefined || body.secret_key !== undefined) {
+        if (body.access_key !== undefined) run(`UPDATE providers SET access_key = ? WHERE id = ?`, [String(body.access_key).trim(), pid])
+        if (body.secret_key !== undefined) run(`UPDATE providers SET secret_key = ? WHERE id = ?`, [String(body.secret_key).trim(), pid])
+        clearVendorBalanceCache(pid)
       }
       json(res, 200, { ok: true })
       return

@@ -1,4 +1,4 @@
-import { activeSub, many, one, quotaExhausted, QUOTA_EXHAUSTED_MESSAGE, type SessionUser } from './auth'
+import { activeSub, one, quotaExhausted, QUOTA_EXHAUSTED_MESSAGE, type SessionUser } from './auth'
 import { deductTokens, todayUsed } from './billing'
 import { costFenForUsage, isChatModel, type ModelPricing } from './pricing'
 import { normalizeProviderKey } from './provider-key'
@@ -31,12 +31,8 @@ function rateLimited(userId: string): boolean {
 }
 
 function allowedModels(user: SessionUser): string[] {
-  const sub = activeSub(user.id)
-  if (!sub) return []
-  const listed = JSON.parse(sub.pkg.models_json) as string[]
-  if (listed.includes('*')) return ['*']
-  const enabled = many<{ id: string }>('SELECT id FROM models WHERE enabled = 1').map((row) => row.id)
-  return [...new Set([...listed, ...enabled])]
+  if (!activeSub(user.id)) return []
+  return ['*']
 }
 
 function resolveRoute(modelId: string, allow: string[]): { model: ModelRow; provider: ProviderRow } | null {
@@ -176,7 +172,7 @@ export async function proxyChat(opts: {
   }
   const allow = allowedModels(opts.user)
   if (!allow.includes('*') && !allow.includes(requested)) {
-    return jsonError(`当前套餐不可用模型 ${requested}，请升级套餐或在设置里改用已开通的模型。`, 403, 'forbidden_model')
+    return jsonError(`模型 ${requested || '未选择'} 未接入或已停用。`, 403, 'forbidden_model')
   }
 
   const requestedModel = one<ModelRow>('SELECT * FROM models WHERE id = ?', [requested])

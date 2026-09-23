@@ -4,7 +4,7 @@ import { markInstalled, withInstalledFlag } from './installed'
 import { useApp } from './store'
 
 function origin(): string {
-  const base = useApp.getState().settings?.apiBase || 'http://43.139.61.253:8787/v1'
+  const base = useApp.getState().settings?.apiBase || 'http://127.0.0.1:8787/v1'
   return base.replace(/\/v1\/?$/, '')
 }
 

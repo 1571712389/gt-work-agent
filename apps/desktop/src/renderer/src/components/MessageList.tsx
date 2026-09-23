@@ -1,7 +1,7 @@
 import MarkdownView from './MarkdownView'
 import type { MessageAttachment, TaskMessage } from '@shared/protocol'
 import { Plug, Sparkles, UserRound, Wrench, FileText } from 'lucide-react'
-import { useApp } from '../lib/store'
+import { readLiveText, subscribeLiveText, useApp } from '../lib/store'
 import BrandMark from './BrandMark'
 import { useActivityLabel } from '../lib/agent-status'
 import {
@@ -11,7 +11,7 @@ import {
   toolDoneLabel,
   toolProgressLabel,
 } from '../lib/tool-display'
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 function ThinkingStatus({ label }: { label: string }) {
   return (
@@ -96,6 +96,33 @@ function ImageThumb({ path, name }: { path: string; name: string }) {
   return <img src={src} alt={name} className="max-h-40 max-w-full rounded-lg object-contain" />
 }
 
+function StreamText({ text }: { text: string }) {
+  const taskId = useApp((s) => s.currentId)
+  const ref = useRef<HTMLDivElement>(null)
+  const painted = useRef('')
+  useLayoutEffect(() => {
+    const paint = () => {
+      const node = ref.current
+      if (!node) return
+      const live = readLiveText()
+      const next = live && live.taskId === taskId ? live.content : text
+      if (!node.childNodes.length) {
+        node.textContent = next
+        painted.current = next
+        return
+      }
+      const prev = painted.current
+      if (prev === next) return
+      if (prev && next.startsWith(prev)) node.append(next.slice(prev.length))
+      else node.textContent = next
+      painted.current = next
+    }
+    paint()
+    return subscribeLiveText(paint)
+  }, [taskId, text])
+  return <div ref={ref} className="whitespace-pre-wrap break-words" />
+}
+
 const ChatTurn = memo(function ChatTurn({ msg, streaming }: { msg: TaskMessage; streaming: boolean }) {
   if (msg.tool) return <ToolCard msg={msg} />
   if (msg.role === 'assistant' && !msg.content.trim()) return null
@@ -116,7 +143,7 @@ const ChatTurn = memo(function ChatTurn({ msg, streaming }: { msg: TaskMessage; 
             <div className="whitespace-pre-wrap break-words">{body}</div>
           </div>
         ) : streaming ? (
-          <div className="whitespace-pre-wrap break-words">{body}</div>
+          <StreamText text={body} />
         ) : (
           <MarkdownView content={body} />
         )}

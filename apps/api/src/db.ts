@@ -175,6 +175,13 @@ CREATE TABLE IF NOT EXISTS sms_codes (
   if (!orderCols.some((c) => c.name === 'credit_tokens')) {
     run('ALTER TABLE orders ADD COLUMN credit_tokens INTEGER NOT NULL DEFAULT 0')
   }
+  const providerCols = many<{ name: string }>('PRAGMA table_info(providers)')
+  if (!providerCols.some((c) => c.name === 'access_key')) {
+    run(`ALTER TABLE providers ADD COLUMN access_key TEXT NOT NULL DEFAULT ''`)
+  }
+  if (!providerCols.some((c) => c.name === 'secret_key')) {
+    run(`ALTER TABLE providers ADD COLUMN secret_key TEXT NOT NULL DEFAULT ''`)
+  }
   db.exec(`
 CREATE TABLE IF NOT EXISTS desktop_auths (
   id TEXT PRIMARY KEY,

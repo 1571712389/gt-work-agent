@@ -777,7 +777,7 @@
                 <div><label>份额配额</label><input data-f="token_quota" type="number" value="${p.token_quota}"></div>
                 <div><label>席位</label><input data-f="seats" type="number" value="${p.seats || 1}"></div>
               </div>
-              <label>模型（逗号分隔，* 表示全部）</label><input data-f="models" value="${parseJson(p.models_json, []).join(', ')}">
+              <label>模型（客户端不按档次限制，已启用模型对所有套餐开放）</label><input data-f="models" value="${parseJson(p.models_json, []).join(', ')}">
               <div class="checks">
                 <label><input data-f="allow_mcp" type="checkbox" ${p.allow_mcp ? 'checked' : ''}> 允许 MCP</label>
                 <label><input data-f="allow_team" type="checkbox" ${p.allow_team ? 'checked' : ''}> 允许团队</label>
@@ -843,31 +843,76 @@
           ])
           const apps = appsPack.list || []
           const esc = (value) => String(value || '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
-          main.innerHTML = `<div class="toolbar"><div><h1>三方模型供应商</h1><p class="muted">厂商 Key 只能在这里配置。DeepSeek 从 platform.deepseek.com 复制，以 <code>sk-</code> 开头；不要把「API Key」几个字一起粘进去。未保存 Key 的供应商不可调用。余额与各模型余量在「监测」。</p></div></div>
-            ${list.map((p) => `<div class="card">
-              <h3>${p.name}</h3>
-              <p>${p.has_key ? '<span class="badge">Key 已配置</span>' : '<span class="badge warn">Key 未配置，该供应商不可用</span>'} · ${p.enabled ? '启用' : '停用'}</p>
-              <label>Base URL</label><input id="url-${p.id}" value="${p.base_url || ''}">
-              <label>API Key（留空则不改已保存的 Key）</label><input id="key-${p.id}" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk- 开头，不要带 Key、Bearer 等文字">
-              <p></p>
-              <button class="btn" data-save-p="${p.id}">保存</button>
-              ${p.has_key ? `<button class="btn light" data-clear-p="${p.id}">清除 Key</button>` : ''}
-              <button class="btn light" data-toggle-p="${p.id}" data-on="${p.enabled ? 1 : 0}">${p.enabled ? '停用' : '启用'}</button>
-              ${p.top_up_url ? `<a class="btn light" href="${p.top_up_url}" target="_blank" rel="noopener">去官网充值</a>` : ''}
-            </div>`).join('')}
-            <div class="card"><h3>模型映射</h3><p class="muted">份额和进货价在「差价」页配置。生图 / 生视频按次扣份额，对话模型 1 Token 乘倍率。</p><div class="table-wrap"><table><tr><th>ID</th><th>名称</th><th>供应商</th><th>类型</th><th>扣额</th><th>输入/输出（分/百万）</th></tr>
-            ${(models || []).map((m) => `<tr><td>${m.id}</td><td>${m.display_name || m.name}</td><td>${m.provider_id}</td><td>${m.kind === 'image' ? '生图' : m.kind === 'video' ? '生视频' : '对话'}</td><td>${m.kind && m.kind !== 'chat' ? (m.unit_fen || 0) + ' 分/次' : (m.multiplier || 1) + ' 份额'}</td><td>${m.input_fen_per_m || 0} / ${m.output_fen_per_m || 0}</td></tr>`).join('')}</table></div></div>
-            <div class="card"><h3>新增供应商</h3>
+          if (!state.providerFocusDone && new URLSearchParams(location.search).get('focus') === 'oauth') {
+            state.providerPane = 'oauth'
+            state.providerFocusDone = true
+          }
+          if (!list.some((p) => p.id === state.providerId)) state.providerId = list[0]?.id || ''
+          const current = list.find((p) => p.id === state.providerId) || null
+          const modelVendors = [...new Set((models || []).map((m) => m.provider_id))]
+          if (!modelVendors.includes(state.providerModelId)) state.providerModelId = modelVendors[0] || ''
+          const shownModels = (models || []).filter((m) => m.provider_id === state.providerModelId)
+          const flash = state.providerFlash
+          state.providerFlash = ''
+          const paneBtn = (id, label) => `<button type="button" data-pv-pane="${id}" class="${state.providerPane === id ? 'on' : ''}">${label}</button>`
+          const kindLabel = (kind) => kind === 'image' ? '生图' : kind === 'video' ? '生视频' : '对话'
+          const vendorPane = !list.length
+            ? '<div class="card"><p class="muted">还没有供应商。请到「新增」里创建。</p></div>'
+            : `<div class="pv-layout">
+                <div class="pv-list" role="tablist" aria-label="供应商">
+                  ${list.map((p) => `<button type="button" class="pv-item${p.id === state.providerId ? ' on' : ''}" data-pick-p="${esc(p.id)}" role="tab" aria-selected="${p.id === state.providerId}">
+                    <strong>${esc(p.name)}</strong>
+                    <span class="pv-meta">
+                      <span class="badge ${p.enabled ? '' : 'off'}">${p.enabled ? '已启用' : '已停用'}</span>
+                      <span class="badge ${p.has_key ? '' : 'warn'}">${p.has_key ? 'Key 已配' : '无 Key'}</span>
+                      ${p.id === 'prov_doubao' ? `<span class="badge ${p.has_billing_key ? '' : 'warn'}">${p.has_billing_key ? '余额密钥已配' : '未配余额密钥'}</span>` : ''}
+                    </span>
+                  </button>`).join('')}
+                </div>
+                ${current ? `<div class="card">
+                  <div class="pv-head">
+                    <h3>${esc(current.name)}</h3>
+                    <button type="button" class="switch${current.enabled ? ' on' : ''}" data-toggle-p="${esc(current.id)}" data-on="${current.enabled ? 1 : 0}" role="switch" aria-checked="${current.enabled ? 'true' : 'false'}">
+                      <span class="knob" aria-hidden="true"></span>
+                      <span>${current.enabled ? '已启用' : '已停用'}</span>
+                    </button>
+                  </div>
+                  <p class="muted">${current.has_key ? 'Key 已保存，留空再点保存不会覆盖。' : '还没有 Key，保存前请粘贴厂商 Key。停用后客户端不会使用这家供应商。'}</p>
+                  <label>Base URL</label><input id="url-${esc(current.id)}" value="${esc(current.base_url || '')}">
+                  <label>API Key（留空则不改已保存的 Key）</label><input id="key-${esc(current.id)}" type="password" autocomplete="new-password" spellcheck="false" placeholder="${current.id === 'prov_doubao' ? '方舟推理 Key，不是 Access Key' : 'sk- 开头，不要带 Key、Bearer 等文字'}">
+                  ${current.id === 'prov_doubao' ? `<label>Access Key（留空则不修改）</label><input id="ak-${esc(current.id)}" autocomplete="off" spellcheck="false" placeholder="AKLT 开头，在火山引擎「访问控制 → 密钥管理」">
+                  <label>Secret Key（留空则不修改）</label><input id="sk-${esc(current.id)}" type="password" autocomplete="new-password" spellcheck="false" placeholder="${current.has_billing_key ? '已保存，留空则不修改' : '创建密钥时只显示一次'}">
+                  <p class="muted">这两项只用来查火山费用中心余额，不会发给客户端，也不能代替上面的推理 Key。</p>` : ''}
+                  <div class="pv-actions">
+                    <button class="btn" data-save-p="${esc(current.id)}">保存</button>
+                    ${current.has_key ? `<button class="btn light" data-clear-p="${esc(current.id)}">清除 Key</button>` : ''}
+                    ${current.id === 'prov_doubao' && current.has_billing_key ? `<button class="btn light" data-clear-bill="${esc(current.id)}">清除余额密钥</button>` : ''}
+                    ${current.top_up_url ? `<a class="btn light" href="${esc(current.top_up_url)}" target="_blank" rel="noopener">去官网充值</a>` : ''}
+                  </div>
+                  <p class="err" id="pv-err" role="alert"></p>
+                </div>` : ''}
+              </div>`
+          const modelsPane = `<div class="seg sub">${modelVendors.map((id) => `<button type="button" data-pv-model="${esc(id)}" class="${id === state.providerModelId ? 'on' : ''}">${esc(list.find((p) => p.id === id)?.name || id)}</button>`).join('') || '<span class="muted">还没有模型</span>'}</div>
+            <div class="card"><p class="muted">「调用模型」必须是厂商控制台里的模型 ID。豆包请填带日期的 ID，例如 doubao-seed-2-0-mini-260428。份额和进货价在「差价」页配置。</p><div class="table-wrap"><table><tr><th>名称</th><th>类型</th><th>调用模型</th><th></th></tr>
+            ${shownModels.map((m) => `<tr>
+              <td><b>${esc(m.display_name || m.name)}</b><div class="muted">${esc(m.id)}</div></td>
+              <td>${kindLabel(m.kind)}</td>
+              <td><input id="up-${esc(m.id)}" value="${esc(m.upstream_model || '')}" spellcheck="false" style="min-width:280px"></td>
+              <td><button class="btn sm" data-save-up="${esc(m.id)}">保存</button></td>
+            </tr>`).join('') || '<tr><td colspan="4" class="muted">这家供应商还没有模型</td></tr>'}</table></div></div>`
+          const createPane = `<div class="card"><h3>新增供应商</h3>
               <div class="form-grid">
                 <div><label>ID</label><input id="npv-id" placeholder="prov_xxx"></div>
                 <div><label>名称</label><input id="npv-name" placeholder="某厂商"></div>
                 <div><label>Base URL</label><input id="npv-url" placeholder="https://api.example.com/v1"></div>
                 <div><label>API Key</label><input id="npv-key" type="password" autocomplete="off"></div>
               </div>
-              <p></p><button class="btn" id="npv-add">创建</button>
-            </div>
-            <div class="card" id="connector-oauth"><h3>连接器浏览器登录</h3>
+              <p class="err" id="pv-err" role="alert"></p>
+              <div class="pv-actions"><button class="btn" id="npv-add">创建</button></div>
+            </div>`
+          const oauthPane = `<div class="card" id="connector-oauth"><h3>连接器浏览器登录</h3>
               <p class="muted">钉钉连接器走客户本机 CLI 登录，不使用这里的 Client ID。其他连接器仍由平台配一次：客户点 + 只会打开浏览器，不会看到 Client ID。Secret 留空表示不改已保存的值。回调地址要原样填到开放平台。</p>
+              <p class="err" id="pv-err" role="alert"></p>
               ${apps.map((app) => `<div class="form-grid" style="margin-top:16px">
                 <div><label>${esc(app.name)} Client ID</label><input id="oa-id-${esc(app.id)}" value="${esc(app.clientId)}" autocomplete="off"></div>
                 <div><label>Client Secret${app.hasSecret ? '（已保存）' : ''}</label><input id="oa-secret-${esc(app.id)}" type="password" autocomplete="new-password" placeholder="${app.hasSecret ? '留空则不修改' : '必填'}"></div>
@@ -875,29 +920,84 @@
               <p class="muted">回调地址：<code>${esc(app.redirectUri)}</code> ${app.ready ? '<span class="badge">可浏览器登录</span>' : '<span class="badge warn">未配齐</span>'}</p>
               <button class="btn" data-save-oa="${esc(app.id)}">保存 ${esc(app.name)}</button>`).join('') || '<p class="muted">没有可配置的浏览器登录</p>'}
             </div>`
-          main.querySelectorAll('[data-save-p]').forEach((el) => el.onclick = async () => {
-            const body = { base_url: $('url-' + el.dataset.saveP).value, enabled: true }
+          const body = state.providerPane === 'models' ? modelsPane : state.providerPane === 'create' ? createPane : state.providerPane === 'oauth' ? oauthPane : vendorPane
+          main.innerHTML = `<div class="toolbar"><div><h1>三方模型供应商</h1><p class="muted">厂商 Key 只在这里配置。DeepSeek 从 platform.deepseek.com 复制，以 <code>sk-</code> 开头。未保存 Key 或已停用的供应商，客户端不会调用。余额在「监测」。</p></div></div>
+            <div class="seg" role="tablist">${paneBtn('vendors', '供应商')}${paneBtn('models', '模型')}${paneBtn('create', '新增')}${paneBtn('oauth', '连接器')}</div>
+            ${flash ? `<div class="flash" role="status">${esc(flash)}</div>` : ''}
+            ${body}`
+          const fail = (el, error) => {
+            el.disabled = false
+            el.classList.remove('is-busy')
+            const box = $('pv-err')
+            if (box) box.textContent = error?.message || '操作失败'
+          }
+          const runAction = async (el, pending, done, fn) => {
+            const prev = el.textContent
+            el.disabled = true
+            el.classList.add('is-busy')
+            el.textContent = pending
+            try {
+              await fn()
+              state.providerFlash = done
+              shellContent()
+            } catch (error) {
+              el.textContent = prev
+              fail(el, error)
+            }
+          }
+          main.querySelectorAll('[data-pv-pane]').forEach((el) => el.onclick = () => {
+            state.providerPane = el.dataset.pvPane
+            shellContent()
+          })
+          main.querySelectorAll('[data-pick-p]').forEach((el) => el.onclick = () => {
+            state.providerId = el.dataset.pickP
+            shellContent()
+          })
+          main.querySelectorAll('[data-pv-model]').forEach((el) => el.onclick = () => {
+            state.providerModelId = el.dataset.pvModel
+            shellContent()
+          })
+          main.querySelectorAll('[data-save-up]').forEach((el) => el.onclick = () => runAction(el, '保存中…', '调用模型已保存', async () => {
+            const input = $('up-' + el.dataset.saveUp)
+            const upstream = input ? input.value.trim() : ''
+            if (!upstream) throw new Error('请填写调用模型')
+            await api('/v1/admin/models/' + el.dataset.saveUp, { method: 'PUT', body: { upstream_model: upstream } })
+          }))
+          main.querySelectorAll('[data-save-p]').forEach((el) => el.onclick = () => runAction(el, '保存中…', '已保存', async () => {
+            const body = { base_url: $('url-' + el.dataset.saveP).value }
             const key = $('key-' + el.dataset.saveP).value.trim()
             if (key) body.api_key = key.replace(/^(api[_-\s]?key|key|bearer)\s*[:=]?\s*/i, '').trim()
+            const ak = $('ak-' + el.dataset.saveP)
+            const sk = $('sk-' + el.dataset.saveP)
+            if (ak && ak.value.trim()) body.access_key = ak.value.trim()
+            if (sk && sk.value.trim()) body.secret_key = sk.value.trim()
             await api('/v1/admin/providers/' + el.dataset.saveP, { method: 'PUT', body })
-            shellContent()
-          })
-          main.querySelectorAll('[data-clear-p]').forEach((el) => el.onclick = async () => {
+          }))
+          main.querySelectorAll('[data-clear-bill]').forEach((el) => el.onclick = () => runAction(el, '清除中…', '已清除火山余额密钥', async () => {
+            await api('/v1/admin/providers/' + el.dataset.clearBill, { method: 'PUT', body: { access_key: '', secret_key: '' } })
+          }))
+          main.querySelectorAll('[data-clear-p]').forEach((el) => el.onclick = () => runAction(el, '清除中…', '已清除 Key，该供应商暂时不可调用', async () => {
             await api('/v1/admin/providers/' + el.dataset.clearP, { method: 'PUT', body: { api_key: '' } })
-            shellContent()
+          }))
+          main.querySelectorAll('[data-toggle-p]').forEach((el) => el.onclick = () => {
+            const turningOn = el.dataset.on !== '1'
+            return runAction(el, turningOn ? '启用中…' : '停用中…', turningOn ? '已启用，客户端可以使用这家供应商' : '已停用，客户端不会再调用这家供应商', async () => {
+              await api('/v1/admin/providers/' + el.dataset.toggleP, { method: 'PUT', body: { enabled: turningOn } })
+            })
           })
-          main.querySelectorAll('[data-toggle-p]').forEach((el) => el.onclick = async () => {
-            await api('/v1/admin/providers/' + el.dataset.toggleP, { method: 'PUT', body: { enabled: el.dataset.on !== '1' } })
-            shellContent()
-          })
-          $('npv-add').onclick = async () => {
+          const addBtn = $('npv-add')
+          if (addBtn) addBtn.onclick = () => runAction(addBtn, '创建中…', '供应商已创建', async () => {
+            const id = $('npv-id').value.trim()
+            const name = $('npv-name').value.trim()
+            if (!id || !name) throw new Error('请填写供应商 ID 和名称')
             await api('/v1/admin/providers', {
               method: 'POST',
-              body: { id: $('npv-id').value.trim(), name: $('npv-name').value.trim(), base_url: $('npv-url').value.trim(), api_key: $('npv-key').value.trim() },
+              body: { id, name, base_url: $('npv-url').value.trim(), api_key: $('npv-key').value.trim() },
             })
-            shellContent()
-          }
-          main.querySelectorAll('[data-save-oa]').forEach((el) => el.onclick = async () => {
+            state.providerId = id
+            state.providerPane = 'vendors'
+          })
+          main.querySelectorAll('[data-save-oa]').forEach((el) => el.onclick = () => runAction(el, '保存中…', '连接器登录信息已保存', async () => {
             const id = el.dataset.saveOa
             await api('/v1/admin/connector-apps', {
               method: 'PUT',
@@ -907,11 +1007,7 @@
                 clientSecret: $('oa-secret-' + id).value,
               },
             })
-            shellContent()
-          })
-          if (new URLSearchParams(location.search).get('focus') === 'oauth') {
-            document.getElementById('connector-oauth')?.scrollIntoView({ block: 'start' })
-          }
+          }))
           return
         }
         if (tab === 'orders') {

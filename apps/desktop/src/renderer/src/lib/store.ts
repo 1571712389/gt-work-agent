@@ -43,30 +43,67 @@ interface AppState {
 }
 
 const defaultSettings: AppSettings = {
-  apiBase: 'http://43.139.61.253:8787/v1',
+  apiBase: 'http://127.0.0.1:8787/v1',
   apiKey: '',
   model: 'deepseek-chat',
   defaultWorkspace: '',
   permissionMode: 'default',
   closeToTray: true,
-  shopUrl: 'http://43.139.61.253:8787',
+  shopUrl: 'http://127.0.0.1:8787',
   userEmail: '',
 }
 
 type QueuedEvent = { taskId: string; event: AgentEvent; runId?: number }
 
-let pendingEvents: QueuedEvent[] = []
-let flushFrame = 0
-let commitEvents: (batch: QueuedEvent[]) => void = () => {}
+type LiveText = { taskId: string; messageId: string; content: string; thinking: string }
 
-function flushPendingEvents() {
-  flushFrame = 0
-  const batch = pendingEvents
-  pendingEvents = []
-  if (batch.length) commitEvents(batch)
+let live: LiveText | null = null
+let liveTimer = 0
+const liveListeners = new Set<() => void>()
+
+export function readLiveText(): LiveText | null {
+  return live
 }
 
+export function subscribeLiveText(listener: () => void): () => void {
+  liveListeners.add(listener)
+  return () => {
+    liveListeners.delete(listener)
+  }
+}
+
+function notifyLive(): void {
+  for (const listener of liveListeners) listener()
+}
+
+export function flushLiveText(): void {
+  if (liveTimer) window.clearTimeout(liveTimer)
+  commitLive()
+}
+
+let commitEvents: (batch: QueuedEvent[]) => void = () => {}
+let commitLive: () => void = () => {}
+
 export const useApp = create<AppState>((set, get) => {
+  commitLive = () => {
+    liveTimer = 0
+    const snap = live
+    if (!snap) return
+    let changed = false
+    const tasks = get().tasks.map((task) => {
+      if (task.id !== snap.taskId) return task
+      const index = task.messages.findIndex((msg) => msg.id === snap.messageId)
+      if (index < 0) return task
+      const msg = task.messages[index]
+      if (msg.content === snap.content && (msg.thinking || '') === snap.thinking) return task
+      changed = true
+      const messages = task.messages.slice()
+      messages[index] = { ...msg, content: snap.content, thinking: snap.thinking || undefined }
+      return { ...task, messages }
+    })
+    if (changed) set({ tasks })
+  }
+
   commitEvents = (batch) => {
     let tasks = get().tasks
     let runSeen = get().runSeen
@@ -226,17 +263,49 @@ export const useApp = create<AppState>((set, get) => {
   },
   applyEvent: (taskId, event, runId) => {
     if (event.type === 'text' || event.type === 'reasoning') {
-      pendingEvents.push({ taskId, event, runId })
-      if (!flushFrame) flushFrame = requestAnimationFrame(flushPendingEvents)
+      const seen = get().runSeen[taskId] || 0
+      if (typeof runId === 'number' && runId < seen) return
+      if (get().halted[taskId]) return
+      if (typeof runId === 'number' && runId !== seen) set({ runSeen: { ...get().runSeen, [taskId]: runId } })
+      let task = get().tasks.find((item) => item.id === taskId)
+      if (!task) return
+      let last = task.messages.at(-1)
+      if (!(last?.role === 'assistant' && !last.tool)) {
+        const created = {
+          id: crypto.randomUUID(),
+          role: 'assistant' as const,
+          content: '',
+          createdAt: Date.now(),
+        }
+        const messages = [...task.messages, created]
+        task = { ...task, messages }
+        set({ tasks: get().tasks.map((item) => (item.id === taskId ? task! : item)) })
+        last = created
+      }
+      if (!live || live.taskId !== taskId || live.messageId !== last.id) {
+        live = { taskId, messageId: last.id, content: last.content || '', thinking: last.thinking || '' }
+      }
+      if (event.type === 'reasoning') {
+        live.thinking += event.delta
+        return
+      }
+      const firstVisible = live.content.length === 0
+      live.content += event.delta
+      notifyLive()
+      if (firstVisible) {
+        if (liveTimer) window.clearTimeout(liveTimer)
+        liveTimer = 0
+        commitLive()
+        return
+      }
+      if (!liveTimer) liveTimer = window.setTimeout(commitLive, 120)
       return
     }
-    if (flushFrame) {
-      cancelAnimationFrame(flushFrame)
-      flushFrame = 0
+    if (liveTimer) {
+      window.clearTimeout(liveTimer)
+      commitLive()
     }
-    const queued = pendingEvents
-    pendingEvents = []
-    commitEvents([...queued, { taskId, event, runId }])
+    commitEvents([{ taskId, event, runId }])
   },
   }
 })

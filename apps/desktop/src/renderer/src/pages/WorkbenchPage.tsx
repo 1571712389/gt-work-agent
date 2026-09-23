@@ -6,7 +6,7 @@ import RightPane from '../components/RightPane'
 import TaskList from '../components/TaskList'
 import { useActivityLabel } from '../lib/agent-status'
 import { quotaExhausted } from '../lib/quota'
-import { useApp } from '../lib/store'
+import { subscribeLiveText, useApp } from '../lib/store'
 import type { AgentMode, WorkspaceEntry } from '@shared/protocol'
 
 const PANE_KEY = 'gt.workspaceOpen'
@@ -56,7 +56,19 @@ export default function WorkbenchPage() {
     if (len > prevLenRef.current && lastMsg?.role === 'user') stickRef.current = true
     prevLenRef.current = len
     scrollToBottom()
-  }, [task?.id, task?.messages.length, lastMsg?.content?.length, lastMsg?.role])
+  }, [task?.id, task?.messages.length, lastMsg?.role])
+
+  useEffect(() => {
+    let frame = 0
+    return subscribeLiveText(() => {
+      if (!stickRef.current || holdingRef.current) return
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        scrollToBottom()
+      })
+    })
+  }, [])
 
   const toggleWorkspace = () => {
     setWorkspaceOpen((open) => {

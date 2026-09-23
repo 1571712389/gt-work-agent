@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { activeSub, many, one, run, now, id, quotaExhausted, QUOTA_EXHAUSTED_MESSAGE, type SessionUser } from './auth'
 import { deductTokens, todayUsed } from './billing'
 import {
@@ -62,12 +64,8 @@ function fail(message: string, status: number, type = 'generate') {
 }
 
 function allowedModels(user: SessionUser): string[] {
-  const sub = activeSub(user.id)
-  if (!sub) return []
-  const listed = JSON.parse(sub.pkg.models_json) as string[]
-  if (listed.includes('*')) return ['*']
-  const enabled = many<{ id: string }>('SELECT id FROM models WHERE enabled = 1').map((row) => row.id)
-  return [...new Set([...listed, ...enabled])]
+  if (!activeSub(user.id)) return []
+  return ['*']
 }
 
 function baseModel(): ModelPricing | undefined {
@@ -106,7 +104,86 @@ function publicJob(job: JobRow) {
     duration: params.duration || null,
     ratio: params.ratio || null,
     urls: Array.isArray(result?.urls) ? result.urls : [],
+    stored: Boolean(result?.stored) || Boolean(mediaFile(job.user_id, job.id)),
     result,
+  }
+}
+
+const MEDIA_ROOT = path.resolve(process.env.GT_API_DATA || 'data', 'media')
+const MEDIA_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.webm'])
+
+function mediaDir(userId: string): string {
+  return path.join(MEDIA_ROOT, userId.replace(/[^a-zA-Z0-9_-]/g, '_'))
+}
+
+export function mediaFile(userId: string, jobId: string): string | null {
+  const dir = mediaDir(userId)
+  if (!fs.existsSync(dir)) return null
+  const safeId = jobId.replace(/[^a-zA-Z0-9_-]/g, '')
+  const hit = fs.readdirSync(dir).find((name) => name.startsWith(`${safeId}.`))
+  return hit ? path.join(dir, hit) : null
+}
+
+export function mediaType(file: string): string {
+  const ext = path.extname(file).toLowerCase()
+  if (ext === '.mp4') return 'video/mp4'
+  if (ext === '.webm') return 'video/webm'
+  if (ext === '.png') return 'image/png'
+  if (ext === '.webp') return 'image/webp'
+  if (ext === '.gif') return 'image/gif'
+  return 'image/jpeg'
+}
+
+function extOf(url: string, kind: string): string {
+  try {
+    const ext = path.extname(new URL(url).pathname).toLowerCase()
+    if (MEDIA_EXT.has(ext)) return ext === '.jpeg' ? '.jpg' : ext
+  } catch {
+    /* ignore */
+  }
+  return kind === 'video' ? '.mp4' : '.png'
+}
+
+export function saveGenerationMedia(userId: string, jobId: string, bytes: Buffer, ext: string): string | null {
+  const job = one<JobRow>('SELECT * FROM generation_jobs WHERE id = ? AND user_id = ?', [jobId, userId])
+  if (!job || job.status !== 'succeeded') return null
+  const safeExt = MEDIA_EXT.has(ext) ? (ext === '.jpeg' ? '.jpg' : ext) : extOf('', job.kind)
+  const dir = mediaDir(userId)
+  fs.mkdirSync(dir, { recursive: true })
+  const dest = path.join(dir, `${jobId.replace(/[^a-zA-Z0-9_-]/g, '')}${safeExt}`)
+  fs.writeFileSync(dest, bytes)
+  let result: Record<string, unknown> = {}
+  try {
+    result = job.result_json ? (JSON.parse(job.result_json) as Record<string, unknown>) : {}
+  } catch {
+    result = {}
+  }
+  patchJob(jobId, { result: { ...result, stored: true } })
+  return dest
+}
+
+async function keepGenerationMedia(job: JobRow): Promise<void> {
+  if (job.status !== 'succeeded' || mediaFile(job.user_id, job.id)) return
+  let result: Record<string, unknown> = {}
+  try {
+    result = job.result_json ? (JSON.parse(job.result_json) as Record<string, unknown>) : {}
+  } catch {
+    return
+  }
+  if (result.archiveTried) return
+  const url = Array.isArray(result.urls) ? String(result.urls[0] || '') : ''
+  if (!url.startsWith('http')) {
+    patchJob(job.id, { result: { ...result, archiveTried: true } })
+    return
+  }
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(20_000) })
+    if (!resp.ok) throw new Error(String(resp.status))
+    const bytes = Buffer.from(await resp.arrayBuffer())
+    if (bytes.length < 32) throw new Error('empty')
+    saveGenerationMedia(job.user_id, job.id, bytes, extOf(url, job.kind))
+  } catch {
+    patchJob(job.id, { result: { ...result, archiveTried: true } })
   }
 }
 
@@ -376,7 +453,9 @@ async function runImage(
   }
   patchJob(jobId, { status: 'succeeded', result: { urls }, billed, costFen: fen })
   const job = one<JobRow>('SELECT * FROM generation_jobs WHERE id = ?', [jobId])!
-  return { status: 200, body: publicJob(job) }
+  await keepGenerationMedia(job)
+  const saved = one<JobRow>('SELECT * FROM generation_jobs WHERE id = ?', [jobId]) || job
+  return { status: 200, body: publicJob(saved) }
 }
 
 async function submitVideo(
@@ -503,7 +582,9 @@ async function refreshVideo(job: JobRow, provider: ProviderRow, userId: string) 
   }
   patchJob(job.id, { status: 'succeeded', result: { urls: [url], raw: payload }, billed, costFen: fen })
   const next = one<JobRow>('SELECT * FROM generation_jobs WHERE id = ?', [job.id])!
-  return { status: 200, body: publicJob(next) }
+  await keepGenerationMedia(next)
+  const saved = one<JobRow>('SELECT * FROM generation_jobs WHERE id = ?', [job.id]) || next
+  return { status: 200, body: publicJob(saved) }
 }
 
 function guardUser(user: SessionUser) {
@@ -524,7 +605,7 @@ export function quoteGeneration(user: SessionUser, input: GenerateInput) {
   const allow = allowedModels(user)
   if (!modelId) return fail('请选择生成模型', 400)
   if (!allow.includes('*') && !allow.includes(modelId)) {
-    return fail(`当前套餐不可用模型 ${modelId}，请升级到专业版或团队版。`, 403, 'forbidden_model')
+    return fail(`模型 ${modelId} 未接入或已停用。`, 403, 'forbidden_model')
   }
   if (modelKind(modelId) !== kind) return fail('模型类型与当前创作页不匹配。', 400)
   return { status: 200, body: quoteFor(modelId, input, user) }
@@ -540,7 +621,7 @@ export async function startGeneration(user: SessionUser, input: GenerateInput) {
   const modelId = String(input.model || '')
   const allow = allowedModels(user)
   if (!allow.includes('*') && !allow.includes(modelId)) {
-    return fail(`当前套餐不可用模型 ${modelId}，请升级到专业版或团队版。`, 403, 'forbidden_model')
+    return fail(`模型 ${modelId} 未接入或已停用。`, 403, 'forbidden_model')
   }
   const requested = one<ModelRow>('SELECT * FROM models WHERE id = ?', [modelId])
   const provider = requested ? one<ProviderRow>('SELECT * FROM providers WHERE id = ?', [requested.provider_id]) : null
@@ -552,7 +633,7 @@ export async function startGeneration(user: SessionUser, input: GenerateInput) {
     )
   }
   const route = resolveRoute(modelId, allow, kind)
-  if (!route) return fail(`模型 ${modelId} 未接入，或当前套餐不含该能力。`, 403, 'forbidden_model')
+  if (!route) return fail(`模型 ${modelId} 未接入或已停用。`, 403, 'forbidden_model')
   const quote = quoteFor(modelId, input, user)
   if (!quote.enough) {
     return fail(`额度不足：本次约消耗套餐 ${quote.percent}%，请到官网充值后再使用。`, 402)
@@ -593,10 +674,15 @@ export async function getGeneration(user: SessionUser, jobId: string) {
   return { status: 200, body: publicJob(job) }
 }
 
-export function listGenerations(user: SessionUser, limit = 30) {
+export async function listGenerations(user: SessionUser, limit = 30) {
   const list = many<JobRow>(
     `SELECT * FROM generation_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
     [user.id, Math.min(80, Math.max(1, limit))],
   )
-  return { status: 200, body: { list: list.map(publicJob) } }
+  await Promise.all(list.map((job) => keepGenerationMedia(job).catch(() => undefined)))
+  const fresh = many<JobRow>(
+    `SELECT * FROM generation_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
+    [user.id, Math.min(80, Math.max(1, limit))],
+  )
+  return { status: 200, body: { list: fresh.map(publicJob) } }
 }

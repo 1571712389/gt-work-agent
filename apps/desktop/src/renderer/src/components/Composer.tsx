@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type DragEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { Check, FileText, ImagePlus, Paperclip, Send, Square, X } from 'lucide-react'
-import { MODES, useApp } from '../lib/store'
+import { flushLiveText, MODES, useApp } from '../lib/store'
 import ContextBar from './ContextBar'
 import ModelPicker from './ModelPicker'
 import QuotaBanner from './QuotaBanner'
@@ -117,6 +117,14 @@ export default function Composer({
   const entitlements = useApp((s) => s.entitlements)
   const current = useApp((s) => s.tasks.find((t) => t.id === s.currentId) || null)
   const longPaste = text.length > 3000
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    const next = Math.min(Math.max(el.scrollHeight, 96), 240)
+    el.style.height = `${next}px`
+  }, [text])
   const busy = running || sending
   const slashOpen = text.startsWith('/')
   const slashQuery = slashOpen ? text.slice(1).trim().toLowerCase() : ''
@@ -177,7 +185,7 @@ export default function Composer({
     const nextModel = models.find((m) => m.vision && (m.kind || 'chat') === 'chat' && m.id.includes('flash'))
       || models.find((m) => m.vision && (m.kind || 'chat') === 'chat')
     if (!nextModel) {
-      setHint('当前套餐模型不支持识图。请升级套餐或改用 DeepSeek Flash / V4 Pro。')
+      setHint('已接入的对话模型都不支持识图。')
       return
     }
     const next = { ...settings, model: nextModel.id }
@@ -379,7 +387,9 @@ export default function Composer({
         )}
         <div className="rounded-2xl border border-line bg-ink px-3 py-2">
           <textarea
+            ref={inputRef}
             value={text}
+            rows={4}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
               const pasted = filesFromClipboard(e.clipboardData)
@@ -407,10 +417,10 @@ export default function Composer({
             }}
             placeholder={
               current
-                ? '直接说你要做什么… 可拖入或粘贴图片/文件。输入 / 选择已下载技能'
-                : '直接输入就会自动新建任务，也可拖入图片。输入 / 选择技能'
+                ? '直接说你要做什么… Shift+Enter 换行。可拖入或粘贴图片/文件，输入 / 选择技能'
+                : '直接输入就会自动新建任务。Shift+Enter 换行，也可拖入图片。输入 / 选择技能'
             }
-            className="max-h-40 min-h-12 w-full resize-none bg-transparent text-sm text-text outline-none placeholder:text-muted"
+            className="max-h-60 min-h-24 w-full resize-none overflow-y-auto bg-transparent text-sm leading-6 text-text outline-none placeholder:text-muted"
           />
           <div className="mt-1 flex items-center gap-1">
             <label
@@ -439,6 +449,7 @@ export default function Composer({
                 onClick={() => {
                   if (!taskId) return
                   useApp.getState().haltTask(taskId)
+                  flushLiveText()
                   void window.gt.tasks.stop(taskId)
                   setSending(false)
                   const latest = useApp.getState().tasks.find((t) => t.id === taskId)

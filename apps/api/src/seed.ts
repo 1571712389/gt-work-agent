@@ -75,12 +75,12 @@ function seedPackages(): void {
       id: 'pkg_trial',
       slug: 'trial',
       name: '体验版',
-      description: '7 天体验，限定 DeepSeek（含 Flash / V4 Pro），适合试用本地工作台。',
+      description: '7 天体验，可使用平台已接入的全部模型。',
       price_fen: 0,
       period_days: 7,
       token_quota: 100_000,
       daily_quota: 20_000,
-      models_json: JSON.stringify(['deepseek-chat', 'deepseek-flash', 'deepseek-v4-pro']),
+      models_json: JSON.stringify(['*']),
       skill_ids_json: JSON.stringify(TRIAL_SKILLS),
       max_concurrency: 1,
       allow_mcp: 0,
@@ -92,19 +92,12 @@ function seedPackages(): void {
       id: 'pkg_pro',
       slug: 'pro',
       name: '专业版',
-      description: '多模型 + 办公技能全开，适合个人高频使用。',
+      description: '办公技能全开，可使用平台已接入的全部模型。',
       price_fen: 9900,
       period_days: 30,
       token_quota: 5_000_000,
       daily_quota: 0,
-      models_json: JSON.stringify([
-        'deepseek-chat',
-        'deepseek-flash',
-        'deepseek-v4-pro',
-        'doubao-mini',
-        'doubao-lite',
-        'gpt-4o-mini',
-      ]),
+      models_json: JSON.stringify(['*']),
       skill_ids_json: JSON.stringify(['*']),
       max_concurrency: 3,
       allow_mcp: 1,
@@ -224,45 +217,10 @@ function syncNewModelMultipliers(): void {
   }
 }
 
-function mergePackageModels(slug: string, extra: string[]): void {
-  const row = one<{ models_json: string }>('SELECT models_json FROM packages WHERE slug = ?', [slug])
-  if (!row) return
-  let list: string[] = []
-  try {
-    list = JSON.parse(row.models_json || '[]') as string[]
-  } catch {
-    return
-  }
-  if (list.includes('*')) return
-  const next = [...list]
-  for (const id of extra) {
-    if (!next.includes(id)) next.push(id)
-  }
-  if (next.length !== list.length) {
-    run(`UPDATE packages SET models_json = ? WHERE slug = ?`, [JSON.stringify(next), slug])
-  }
-}
-
 function ensurePackageAllowlists(): void {
-  const pro = one<{ models_json: string }>('SELECT models_json FROM packages WHERE slug = ?', ['pro'])
-  if (pro?.models_json === JSON.stringify(['deepseek-chat', 'gpt-4o-mini'])) {
-    run(`UPDATE packages SET models_json = ? WHERE slug = 'pro'`, [
-      JSON.stringify(['deepseek-chat', 'doubao-mini', 'doubao-lite', 'gpt-4o-mini']),
-    ])
-  }
-  mergePackageModels('trial', ['deepseek-chat', 'deepseek-flash', 'deepseek-v4-pro'])
-  mergePackageModels('pro', [
-    'deepseek-chat',
-    'deepseek-flash',
-    'deepseek-v4-pro',
-    'doubao-mini',
-    'doubao-lite',
-    'gpt-4o-mini',
-    'doubao-seedream-4.0',
-    'doubao-seedream-5.0',
-    'doubao-seedance-1.0-pro',
-    'doubao-seedance-1.5-pro',
-    'doubao-seedance-fast',
+  run(`UPDATE packages SET models_json = ? WHERE models_json IS NULL OR models_json != ?`, [JSON.stringify(['*']), JSON.stringify(['*'])])
+  run(`UPDATE packages SET description = ? WHERE slug = 'trial' AND description LIKE '%限定 DeepSeek%'`, [
+    '7 天体验，可使用平台已接入的全部模型。',
   ])
 }
 
@@ -303,6 +261,19 @@ function repairProviderKeys(): void {
   }
 }
 
+function syncDoubaoChatUpstream(): void {
+  const fixes: Array<[string, string, string[]]> = [
+    ['doubao-mini', 'doubao-seed-2-0-mini-260428', ['doubao-seed-1-6-mini', 'doubao-seed-2-0-mini', 'doubao-seed-2-0-mini-260215']],
+    ['doubao-lite', 'doubao-seed-2-0-lite-260428', ['doubao-seed-1-6-lite', 'doubao-seed-2-0-lite', 'doubao-seed-2-0-lite-260215']],
+    ['doubao-turbo', 'doubao-seed-2-1-turbo-260628', ['doubao-seed-1-6-turbo', 'doubao-seed-2-1-turbo']],
+    ['doubao-pro', 'doubao-seed-2-1-pro-260915', ['doubao-seed-1-6-pro', 'doubao-seed-2-0-pro-260215', 'doubao-seed-2-1-pro-260628']],
+  ]
+  for (const [id, next, previous] of fixes) {
+    const marks = previous.map(() => '?').join(', ')
+    run(`UPDATE models SET upstream_model = ? WHERE id = ? AND upstream_model IN (${marks})`, [next, id, ...previous])
+  }
+}
+
 function syncSeedance15Upstream(): void {
   run(
     `UPDATE models SET upstream_model = 'doubao-seedance-1.5-pro-251215'
@@ -338,6 +309,7 @@ export function seedIfEmpty(): void {
     seedModelKinds()
     syncNewModelMultipliers()
     ensurePackageAllowlists()
+    syncDoubaoChatUpstream()
     syncSeedance15Upstream()
     backfillUsageCosts()
     seedExtras()

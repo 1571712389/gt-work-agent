@@ -196,6 +196,7 @@ export interface GenerateJob {
   duration?: number | null
   ratio?: string | null
   urls?: string[]
+  stored?: boolean
   localPath?: string
 }
 

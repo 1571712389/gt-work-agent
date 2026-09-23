@@ -95,13 +95,50 @@ function bumpRun(taskId: string): number {
   return next
 }
 
-function broadcast(win: BrowserWindow | null, taskId: string, event: AgentEvent, runId?: number): void {
+type HotBroadcast = {
+  type: 'text' | 'reasoning'
+  delta: string
+  win: BrowserWindow | null
+  runId?: number
+  timer: ReturnType<typeof setTimeout>
+}
+
+const hotBroadcasts = new Map<string, HotBroadcast>()
+
+function sendBroadcast(win: BrowserWindow | null, taskId: string, event: AgentEvent, runId?: number): void {
   if (runId != null && runTokens.get(taskId) !== runId) return
   const payload = { taskId, event, runId }
   const windows = win && !win.isDestroyed() ? [win] : BrowserWindow.getAllWindows()
   for (const item of windows) {
     if (!item.isDestroyed()) item.webContents.send('agent:event', payload)
   }
+}
+
+function flushHotBroadcast(taskId: string): void {
+  const slot = hotBroadcasts.get(taskId)
+  if (!slot) return
+  clearTimeout(slot.timer)
+  hotBroadcasts.delete(taskId)
+  if (!slot.delta) return
+  sendBroadcast(slot.win, taskId, { type: slot.type, delta: slot.delta }, slot.runId)
+}
+
+function broadcast(win: BrowserWindow | null, taskId: string, event: AgentEvent, runId?: number): void {
+  if (event.type !== 'text' && event.type !== 'reasoning') {
+    flushHotBroadcast(taskId)
+    sendBroadcast(win, taskId, event, runId)
+    return
+  }
+  const slot = hotBroadcasts.get(taskId)
+  if (slot && slot.type === event.type) {
+    slot.delta += event.delta
+    slot.win = win
+    slot.runId = runId
+    return
+  }
+  if (slot) flushHotBroadcast(taskId)
+  const timer = setTimeout(() => flushHotBroadcast(taskId), 32)
+  hotBroadcasts.set(taskId, { type: event.type, delta: event.delta, win, runId, timer })
 }
 
 const IMAGE_MIME: Record<string, string> = {
@@ -626,6 +663,7 @@ export async function sendMessage(
 }
 
 export function stopTask(taskId: string): void {
+  flushHotBroadcast(taskId)
   const runId = bumpRun(taskId)
   const session = running.get(taskId)
   if (session) {

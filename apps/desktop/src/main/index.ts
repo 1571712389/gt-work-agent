@@ -3,7 +3,7 @@ import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, protocol, shell, T
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import fs from 'node:fs'
-import { checkUpdate, fetchEntitlements, loginWithWebsite, logout } from './account'
+import { checkUpdate, downloadClientUpdate, fetchEntitlements, loginWithWebsite, logout } from './account'
 import { loadSettings, saveSettings } from './settings'
 import { pullTasks } from './store'
 import {
@@ -43,6 +43,12 @@ import {
 } from './generate'
 import { loadProjects, saveProjects } from './store'
 import { connectConnector } from './connectors'
+
+// 安装包和 npm run dev 的 package 名相同，单实例锁都落在同一份用户目录。
+// 开发模式改用独立目录，否则已安装的光途Work 在托盘里时，dev 会直接退出并把它弹到前台。
+if (!app.isPackaged) {
+  app.setPath('userData', join(app.getPath('appData'), '@gt-workbench', 'desktop-dev'))
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -174,9 +180,14 @@ function registerIpc(): void {
   })
   ipcMain.handle('account:entitlements', () => fetchEntitlements())
   ipcMain.handle('app:checkUpdate', () => checkUpdate())
+  ipcMain.handle('app:downloadUpdate', (event) =>
+    downloadClientUpdate((progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('update:progress', progress)
+    }),
+  )
   ipcMain.handle('app:openShop', async () => {
     const settings = loadSettings()
-    await shell.openExternal(settings.shopUrl || 'http://43.139.61.253:8787')
+    await shell.openExternal(settings.shopUrl || (app.isPackaged ? 'http://43.139.61.253:8787' : 'http://127.0.0.1:8787'))
   })
   ipcMain.handle('app:openUrl', async (_e, raw: string) => {
     const url = String(raw || '')

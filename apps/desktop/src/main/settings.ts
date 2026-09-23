@@ -5,15 +5,25 @@ import type { AppSettings } from '../shared/protocol'
 
 const FILE = () => path.join(app.getPath('userData'), 'settings.json')
 
-const DEFAULTS: AppSettings = {
-  apiBase: 'http://43.139.61.253:8787/v1',
-  apiKey: '',
-  model: 'deepseek-chat',
-  defaultWorkspace: '',
-  permissionMode: 'default',
-  closeToTray: true,
-  shopUrl: 'http://43.139.61.253:8787',
-  userEmail: '',
+const LOCAL_ORIGIN = 'http://127.0.0.1:8787'
+const TEST_ORIGIN = 'http://43.139.61.253:8787'
+
+function serviceOrigin(): string {
+  return app.isPackaged ? TEST_ORIGIN : LOCAL_ORIGIN
+}
+
+function defaults(): AppSettings {
+  const base = serviceOrigin()
+  return {
+    apiBase: `${base}/v1`,
+    apiKey: '',
+    model: 'deepseek-chat',
+    defaultWorkspace: '',
+    permissionMode: 'default',
+    closeToTray: true,
+    shopUrl: base,
+    userEmail: '',
+  }
 }
 
 interface Persisted extends Omit<AppSettings, 'apiKey'> {
@@ -62,14 +72,24 @@ export function isLoopbackUrl(url: string): boolean {
 
 function migrateApiBase(value?: string): string {
   const next = (value || '').trim()
-  if (!next || isUpstreamGateway(next) || isLoopbackUrl(next)) return DEFAULTS.apiBase
+  const fallback = defaults().apiBase
+  if (!app.isPackaged) {
+    if (!next || isUpstreamGateway(next) || !isLoopbackUrl(next)) return fallback
+    return next
+  }
+  if (!next || isUpstreamGateway(next) || isLoopbackUrl(next)) return fallback
   return next
 }
 
 function migrateShopUrl(value?: string, apiBase?: string): string {
   const next = (value || '').trim()
+  const fallback = defaults().shopUrl
+  if (!app.isPackaged) {
+    if (!next || isUpstreamGateway(next) || !isLoopbackUrl(next)) return fallback
+    return next
+  }
   if (!next || isUpstreamGateway(next) || isLoopbackUrl(next)) {
-    return migrateApiBase(apiBase).replace(/\/v1\/?$/, '') || DEFAULTS.shopUrl
+    return migrateApiBase(apiBase).replace(/\/v1\/?$/, '') || fallback
   }
   return next
 }
@@ -81,11 +101,11 @@ export function loadSettings(): AppSettings {
     const shopUrl = migrateShopUrl(raw.shopUrl, apiBase)
     const migrated = apiBase !== (raw.apiBase || '') || shopUrl !== (raw.shopUrl || '')
     const settings: AppSettings = {
-      ...DEFAULTS,
-      model: raw.model || DEFAULTS.model,
-      defaultWorkspace: raw.defaultWorkspace || DEFAULTS.defaultWorkspace,
-      permissionMode: raw.permissionMode || DEFAULTS.permissionMode,
-      closeToTray: raw.closeToTray ?? DEFAULTS.closeToTray,
+      ...defaults(),
+      model: raw.model || defaults().model,
+      defaultWorkspace: raw.defaultWorkspace || defaults().defaultWorkspace,
+      permissionMode: raw.permissionMode || defaults().permissionMode,
+      closeToTray: raw.closeToTray ?? defaults().closeToTray,
       apiBase,
       apiKey: decodeKey(raw.apiKeyEnc),
       shopUrl,
@@ -112,7 +132,7 @@ export function loadSettings(): AppSettings {
     }
     return settings
   } catch {
-    return { ...DEFAULTS }
+    return defaults()
   }
 }
 
@@ -121,7 +141,7 @@ export function saveSettings(next: AppSettings): AppSettings {
   fs.mkdirSync(dir, { recursive: true })
   const persisted: Persisted = {
     apiBase: migrateApiBase(next.apiBase),
-    model: next.model.trim() || DEFAULTS.model,
+    model: next.model.trim() || defaults().model,
     defaultWorkspace: next.defaultWorkspace,
     permissionMode: next.permissionMode,
     closeToTray: next.closeToTray,

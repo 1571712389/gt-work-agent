@@ -1,4 +1,9 @@
-import { shell } from 'electron'
+import { app, shell } from 'electron'
+import { createWriteStream } from 'node:fs'
+import { rename, unlink } from 'node:fs/promises'
+import path from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { isLoopbackUrl, loadSettings, saveSettings } from './settings'
 import type { Entitlements } from '../shared/protocol'
 
@@ -44,7 +49,9 @@ async function applyEntitlements(token: string, email: string) {
     ...settings,
     apiKey: token,
     userEmail: ent?.user.email || email,
-    shopUrl: ent?.shopUrl && !isLoopbackUrl(ent.shopUrl) ? ent.shopUrl : settings.shopUrl,
+    shopUrl: app.isPackaged
+      ? ent?.shopUrl && !isLoopbackUrl(ent.shopUrl) ? ent.shopUrl : settings.shopUrl
+      : ent?.shopUrl && isLoopbackUrl(ent.shopUrl) ? ent.shopUrl : settings.shopUrl,
     model,
   })
 }
@@ -126,11 +133,98 @@ export async function fetchEntitlements() {
   return resp.json() as Promise<Entitlements>
 }
 
-export async function checkUpdate() {
-  const settings = loadSettings()
-  const resp = await fetch(`${origin(settings.apiBase)}/updates/latest.yml`).catch(() => null)
-  if (!resp || !resp.ok) return { ok: false, message: '暂无更新源。打好安装包后把 latest.yml 放到 API /updates。' }
-  const text = await resp.text()
-  const version = /version:\s*([^\s]+)/.exec(text)?.[1] || ''
-  return { ok: true, version, feed: text }
+export type UpdateCheck = {
+  ok: boolean
+  current: string
+  version: string
+  available: boolean
+  platform: 'windows' | 'mac' | 'other'
+  url?: string
+  fileName?: string
+  size?: number
+  message: string
+}
+
+type DownloadAsset = { version?: string; file?: string; size?: number; url?: string }
+type DownloadCatalog = { version?: string; windows?: DownloadAsset | null; mac?: DownloadAsset | null }
+
+function clientPlatform(): UpdateCheck['platform'] {
+  if (process.platform === 'darwin') return 'mac'
+  if (process.platform === 'win32') return 'windows'
+  return 'other'
+}
+
+function cmpVersion(a: string, b: string): number {
+  const pa = a.split('.').map((n) => Number.parseInt(n, 10) || 0)
+  const pb = b.split('.').map((n) => Number.parseInt(n, 10) || 0)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i += 1) {
+    const diff = (pa[i] || 0) - (pb[i] || 0)
+    if (diff) return diff
+  }
+  return 0
+}
+
+export async function checkUpdate(): Promise<UpdateCheck> {
+  const current = app.getVersion()
+  const platform = clientPlatform()
+  const base = controlPlane()
+  const resp = await fetch(`${base}/v1/downloads`).catch(() => null)
+  if (!resp || !resp.ok) {
+    return { ok: false, current, version: current, available: false, platform, message: '暂时连不上更新服务器。' }
+  }
+  const catalog = (await resp.json()) as DownloadCatalog
+  const asset = platform === 'mac' ? catalog.mac : platform === 'windows' ? catalog.windows : null
+  const version = asset?.version || catalog.version || current
+  if (!asset?.url || !asset.file) {
+    const which = platform === 'mac' ? 'Mac' : platform === 'windows' ? 'Windows' : '当前系统'
+    return { ok: true, current, version, available: false, platform, message: `还没有 ${which} 安装包。` }
+  }
+  const available = cmpVersion(version, current) > 0
+  const url = new URL(asset.url, base).toString()
+  return {
+    ok: true,
+    current,
+    version,
+    available,
+    platform,
+    url,
+    fileName: asset.file,
+    size: asset.size,
+    message: available ? `发现新版本 ${version}` : `已是最新版本 ${current}`,
+  }
+}
+
+export async function downloadClientUpdate(
+  onProgress?: (progress: { received: number; total: number }) => void,
+): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
+  const info = await checkUpdate()
+  if (!info.ok || !info.available || !info.url || !info.fileName) {
+    return { ok: false, message: info.message || '没有可下载的新版本' }
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(info.url)
+  } catch {
+    return { ok: false, message: '下载地址无效' }
+  }
+  if (!parsed.pathname.startsWith('/updates/')) return { ok: false, message: '下载地址无效' }
+  const resp = await fetch(parsed)
+  if (!resp.ok || !resp.body) return { ok: false, message: `下载失败（HTTP ${resp.status}）` }
+  const total = Number(resp.headers.get('content-length') || info.size || 0)
+  const dest = path.join(app.getPath('downloads'), info.fileName)
+  const part = `${dest}.part`
+  await unlink(part).catch(() => undefined)
+  let received = 0
+  const source = Readable.fromWeb(resp.body as import('node:stream/web').ReadableStream<Uint8Array>)
+  source.on('data', (chunk: Buffer) => {
+    received += chunk.length
+    onProgress?.({ received, total })
+  })
+  await pipeline(source, createWriteStream(part))
+  await unlink(dest).catch(() => undefined)
+  await rename(part, dest)
+  onProgress?.({ received: total || received, total: total || received })
+  shell.showItemInFolder(dest)
+  return { ok: true, path: dest }
 }
